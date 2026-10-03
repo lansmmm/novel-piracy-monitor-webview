@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>打盗全家捅</title>
+<style>
+  /* ==================== 变量 ==================== */
+  :root {
+    --primary: #2A9D8F;          /* 主色：按钮、强调 */
+    --primary-soft: #E8F5F3;     /* 主色浅底：次级按钮 */
+    --primary-soft-fg: #1F6B60;  /* 主色浅底上的字色 */
+    --bg: #F0F2F5;               /* 页面背景 */
+    --card: #FFFFFF;             /* 卡片 */
+    --radius: 8px;
+    --radius-sm: 6px;
+    --text: #2F3542;
+    --text-dim: #7A869A;
+    --muted: #9AA5B1;
+    --disabled-bg: #ECEFF1;
+    --border: #E8EBEE;
+    --input-bg: #F7F8FA;
+    --line: #F0F2F5;             /* 表格行分隔线 */
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    margin: 0;
+    padding: 12px;                /* 同 Flet page.padding=12 */
+    background: var(--bg);
+    color: var(--text);
+    font-family: "HarmonyOS Sans SC", "HarmonyOS Sans", "Microsoft YaHei UI",
+                 "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;                     /* 同 Flet page.spacing=8 */
+  }
+
+  /* ==================== 卡片 ==================== */
+  .card {
+    background: var(--card);
+    border-radius: var(--radius);
+    padding: 8px;                 /* 同 Flet card() padding=8 */
+    width: 100%;
+    flex: 0 0 auto;
+    /* 窗口太窄时整行可横向滚动，避免按钮被裁掉 */
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  /* 表格卡：吃掉剩余高度，其余卡片高度固定 */
+  .card.grow {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 卡片内的浅灰分隔线（卡A：顶栏 / 来源 / 书签 之间） */
+  .hdiv {
+    height: 1px;
+    background: var(--line);
+    margin: 6px 0;
+    flex: 0 0 auto;
+  }
+
+  /* ==================== 通用行 ==================== */
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .row.tight { gap: 6px; }
+
+  .spacer { flex: 1 1 auto; }
+
+  /* ==================== 按钮 ==================== */
+  .btn {
+    height: 40px;
+    padding: 0 16px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .btn-primary { background: var(--primary); color: #FFFFFF; }
+
+  /* 保存为书签 */
+  .btn-soft { background: var(--primary-soft); color: var(--primary-soft-fg); }
+
+  /* 清 cookies */
+  .btn-soft-green { background: var(--primary-soft); color: var(--primary); }
+
+  /* 停止 / 我已过验证，继续（当前都是禁用态） */
+  .btn-disabled { background: var(--disabled-bg); color: var(--muted); }
+
+  /* 纯文字按钮：来源行的「全选 / 取消」 */
+  .btn-text {
+    height: 28px;
+    padding: 0 8px;
+    border: none;
+    background: transparent;
+    color: var(--primary);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  /* 工具栏小按钮：高 28、字号 12 */
+  .btn-sm {
+    height: 28px;
+    padding: 0 10px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--primary-soft);
+    color: var(--primary-soft-fg);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 400;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .btn-sm-green { background: var(--primary); color: #FFFFFF; }
+  .btn-sm-gray  { background: var(--disabled-bg); color: #455A64; }
+
+  /* 工具栏竖线：1px 高 20，左右各 6px */
+  .sep {
+    width: 1px;
+    height: 20px;
+    background: #D0D5DD;
+    margin: 0 6px;
+    flex: 0 0 auto;
+  }
+
+  /* ==================== 输入框 ==================== */
+  .input {
+    height: 40px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--input-bg);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    flex: 0 0 auto;
+  }
+
+  .input::placeholder { color: var(--muted); }
+
+  .input-book   { width: 240px; }
+  .input-pages  { width: 48px; height: 32px; padding: 0 4px; font-size: 12px;
+                  text-align: center; background: #FFFFFF; }
+  .input-search { width: 220px; height: 32px; padding: 0 6px; font-size: 12px;
+                  background: #FFFFFF; flex: 0 1 220px; min-width: 96px; }
+
+  /* ==================== 文字标签 ==================== */
+  .label      { font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+  .label-main { font-size: 14px; color: var(--text); white-space: nowrap; }
+
+  /* ==================== 小开关 ==================== */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 36px;
+    height: 20px;
+    flex: 0 0 auto;
+  }
+
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+
+  .switch .track {
+    position: absolute;
+    inset: 0;
+    background: #CFD8DC;
+    border-radius: 999px;
+    transition: background .15s;
+  }
+
+  .switch .track::before {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 2px;
+    top: 2px;
+    background: #FFFFFF;
+    border-radius: 50%;
+    transition: transform .15s;
+  }
+
+  .switch input:checked + .track { background: var(--primary); }
+  .switch input:checked + .track::before { transform: translateX(16px); }
+
+  /* ==================== 书签胶囊 ==================== */
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 3px 12px;
+    border-radius: 14px;
+    background: var(--disabled-bg);
+    color: var(--text-dim);
+  }
+
+  .chip .chip-name  { font-size: 13px; font-weight: 700; }
+  .chip .chip-count { font-size: 12px; margin-left: 8px; }
+  .chip .chip-arrow { font-size: 9px;  margin-left: 4px;
+                      padding: 2px 4px; border-radius: 4px; }
+
+  /* ==================== 来源勾选框 ==================== */
+  .check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .check input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--primary);
+  }
+
+  /* ==================== 表格 ==================== */
+  .table-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .table-inner { min-width: 1190px; }
+
+  .table-head {
+    display: flex;
+    background: var(--input-bg);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  .th {
+    padding: 6px 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .table-row {
+    display: flex;
+    border-bottom: 1px solid var(--line);   /* 每行底部浅灰分隔线 */
+  }
+
+  .td {
+    padding: 8px;
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* 列宽（表头 / 数据行共用） */
+  .col-src    { flex: 0 0 80px;  width: 80px; }
+  .col-title  { flex: 0 0 320px; width: 320px; }
+  .col-date   { flex: 0 0 110px; width: 110px; }
+  .col-abs    { flex: 0 0 380px; width: 380px; }
+  .col-url    { flex: 0 0 260px; width: 260px; }
+  .col-menu   { flex: 0 0 40px;  width: 40px; }
+
+  /* ==================== 来源页签 ==================== */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    overflow-x: auto;
+  }
+
+  .tab {
+    padding: 8px 14px;
+    font-size: 13px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .tab.active {
+    color: var(--primary);
+    font-weight: 700;
+    border-top: 2px solid var(--primary);
+  }
+
+  /* ==================== 日志区 ==================== */
+  .log {
+    height: 180px;
+    background: #1E272E;
+    border-radius: var(--radius);
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;             /* 滚动交给 .log-body */
+  }
+
+  /* 日志区右上角的小工具条（开始 / 停止心跳） */
+  .log-bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 6px 8px;
+    background: #1E272E;
+  }
+
+  .log-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 8px 8px;
+  }
+
+  .log-line {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #E8F0F2;
+    white-space: pre-wrap;
+    word-break: break-all;
+    font-family: Consolas, "HarmonyOS Sans SC", "Microsoft YaHei UI", monospace;
+  }
+
+  .log-line.alert { color: #FF6B6B; }
+
+  /* 日志区小按钮：高 22、字号 12 */
+  .btn-xs {
+    height: 22px;
+    padding: 0 10px;
+    border: none;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 400;
+    white-space: nowrap;
+    flex: 0 0 auto;
+  }
+
+  .btn-xs-green { background: var(--primary); color: #FFFFFF; }
+  .btn-xs-gray  { background: var(--disabled-bg); color: #455A64; }
+</style>
+</head>
+<body>
+
+<!-- ============ 卡A：顶栏 + 搜索来源 + 书签区 ============ -->
+<section class="card">
+  <div class="row">
+    <input id="bookInput" class="input input-book" type="text" placeholder="输入书名">
+    <button id="btnSearch" class="btn btn-primary">搜索</button>
+    <div class="row" style="gap:2px">
+      <span class="label">页数</span>
+      <input id="pagesInput" class="input input-pages" type="text" placeholder="自动">
+    </div>
+    <button id="btnBookmark" class="btn btn-soft">保存为书签</button>
+    <button id="btnStop" class="btn btn-disabled">停止</button>
+    <button id="btnCaptchaContinue" class="btn btn-disabled">我已过验证，继续</button>
+    <span class="spacer"></span>
+    <button id="btnClearCookies" class="btn btn-soft-green">清 cookies</button>
+  </div>
+
+  <div class="hdiv"></div>
+
+  <!-- 【2】搜索来源 -->
+  <div class="row tight">
+    <button id="btnToggleSources" class="btn-text">全选 / 取消</button>
+    <label class="check"><input type="checkbox" name="source" value="quark">夸克</label>
+    <label class="check"><input type="checkbox" name="source" value="baidu">百度</label>
+    <label class="check"><input type="checkbox" name="source" value="zhidao">知道</label>
+    <label class="check"><input type="checkbox" name="source" value="tieba">贴吧</label>
+    <label class="check"><input type="checkbox" name="source" value="bing">必应</label>
+    <label class="check"><input type="checkbox" name="source" value="toutiao">头条</label>
+    <label class="check"><input type="checkbox" name="source" value="sogou">搜狗</label>
+    <label class="check"><input type="checkbox" name="source" value="so360">360</label>
+    <label class="check"><input type="checkbox" name="source" value="sogou_weixin">微信</label>
+    <label class="check"><input type="checkbox" name="source" value="weibo">微博</label>
+    <span class="spacer"></span>
+    <span class="label-main">前台模式</span>
+    <label class="switch"><input id="switchFrontend" type="checkbox"><span class="track"></span></label>
+    <span style="width:12px"></span>
+    <span class="label-main">深度模式</span>
+    <label class="switch"><input id="switchDeep" type="checkbox"><span class="track"></span></label>
+  </div>
+
+  <div class="hdiv"></div>
+
+  <!-- 【3】书签区 -->
+  <div id="bookmarkRow" class="chips">
+    <span class="chip"><span class="chip-name">斗破苍穹</span><span class="chip-count">5</span><span class="chip-arrow">▼</span></span>
+    <span class="chip"><span class="chip-name">纯白恶魔</span><span class="chip-count">1</span><span class="chip-arrow">▼</span></span>
+    <span class="chip"><span class="chip-name">我当天道那些年</span><span class="chip-count">6</span><span class="chip-arrow">▼</span></span>
+    <span class="chip"><span class="chip-name">至亲至疏</span><span class="chip-count">2</span><span class="chip-arrow">▼</span></span>
+  </div>
+</section>
+
+<!-- ============ 卡B：工具栏 + 结果表格 + 来源页签 ============ -->
+<section class="card grow">
+  <div class="row tight">
+    <button id="btnTbSelectAll" class="btn-sm">全选/取消</button>
+    <span class="sep"></span>
+    <button id="btnTbOpen" class="btn-sm">批量打开</button>
+    <button id="btnTbCopy" class="btn-sm">批量复制</button>
+    <span class="sep"></span>
+    <button id="btnTbWhite" class="btn-sm btn-sm-green">加白名单</button>
+    <button id="btnTbWhiteWords" class="btn-sm btn-sm-green">白名单词</button>
+    <button id="btnTbResetWhite" class="btn-sm btn-sm-green">重置白名单</button>
+    <span class="sep"></span>
+    <button id="btnTbHistory" class="btn-sm">载入历史数据</button>
+    <button id="btnTbExport" class="btn-sm btn-sm-green">导出结果</button>
+    <button id="btnTbClear" class="btn-sm btn-sm-gray">清空列表</button>
+    <span class="spacer"></span>
+    <input id="tableSearchInput" class="input input-search" type="text"
+           placeholder="筛选标题/摘要/链接">
+    <button id="btnTbSearchClear" class="btn-sm btn-sm-gray">清空</button>
+  </div>
+
+  <!-- 【5】结果表格 -->
+  <div class="table-scroll">
+    <div class="table-inner">
+      <div class="table-head">
+        <div class="th col-src">来源</div>
+        <div class="th col-title">标题</div>
+        <div class="th col-date">日期</div>
+        <div class="th col-abs">摘要</div>
+        <div class="th col-url">最终 url</div>
+        <div class="th col-menu"></div>
+      </div>
+      <!-- 数据行稍后追加：<div class="table-row">…</div>（每行底部自带浅灰分隔线） -->
+      <div id="tableBody"></div>
+    </div>
+  </div>
+
+  <!-- 【6】来源页签 -->
+  <div id="tabs" class="tabs">
+    <span class="tab active">全部</span>
+    <span class="tab">夸克</span>
+    <span class="tab">百度</span>
+    <span class="tab">知道</span>
+    <span class="tab">贴吧</span>
+    <span class="tab">必应</span>
+    <span class="tab">头条</span>
+    <span class="tab">搜狗</span>
+    <span class="tab">360</span>
+    <span class="tab">微信</span>
+    <span class="tab">微博</span>
+    <span class="tab">文心</span>
+  </div>
+</section>
+
+<!-- ============ 卡C：日志区 ============ -->
+<section class="log" id="log">
+  <!-- 右上角工具条：第 3 步链路验证用的模拟心跳 -->
+  <div class="log-bar">
+    <button id="btnHeartbeatStart" class="btn-xs btn-xs-green">开始心跳</button>
+    <button id="btnHeartbeatStop" class="btn-xs btn-xs-gray">停止心跳</button>
+  </div>
+  <div class="log-body" id="logBody">
+    <div class="log-line">[09:40:58] 启动完成，等待搜索…</div>
+    <div class="log-line">[09:41:02] 已勾选来源：夸克 / 百度 / 搜狗</div>
+    <div class="log-line">[09:41:03] 正在打开浏览器（夸克）…</div>
+    <div class="log-line">[09:41:07] 夸克 第 1 页：抓到 12 条候选</div>
+    <div class="log-line">[09:41:09] 百度 命中验证码，已暂停</div>
+    <div class="log-line alert">[09:41:09] [暂停] 需要人工过验证，请在浏览器里点一下，然后按「我已过验证，继续」</div>
+  </div>
+</section>
+
+<script>
+/* ======================================================================
+   第 3 步：Python ↔ JS 数据流
+   - Python 侧用 window.evaluate_js("window.appendLog('...')") 主动推送
+   - 这里只负责“收消息并画出来”，不含任何业务逻辑
+   ====================================================================== */
+(function () {
+  'use strict';
+
+  var logBody = document.getElementById('logBody');
+  var btnStart = document.getElementById('btnHeartbeatStart');
+  var btnStop = document.getElementById('btnHeartbeatStop');
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  function nowStamp() {
+    var d = new Date();
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+
+  /* Python 调用的入口：追加一行日志并滚到底部 */
+  window.appendLog = function (text) {
+    var line = document.createElement('div');
+    line.className = 'log-line';
+
+    var msg = (text === null || text === undefined) ? '' : String(text);
+
+    // 文本里已经带 [HH:MM:SS] 前缀就不重复加
+    if (/^\[\d{2}:\d{2}:\d{2}\]/.test(msg)) {
+      line.textContent = msg;
+    } else {
+      line.textContent = '[' + nowStamp() + '] ' + msg;
+    }
+
+    if (msg.indexOf('[暂停]') !== -1) { line.classList.add('alert'); }
+
+    logBody.appendChild(line);
+    logBody.scrollTop = logBody.scrollHeight;   // 自动滚到最新一行
+    return logBody.children.length;
+  };
+
+  function apiReady() {
+    return !!(window.pywebview && window.pywebview.api);
+  }
+
+  btnStart.addEventListener('click', function () {
+    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+    window.pywebview.api.start_heartbeat();
+  });
+
+  btnStop.addEventListener('click', function () {
+    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+    window.pywebview.api.stop_heartbeat();
+  });
+})();
+</script>
+
+</body>
+
+</html>
