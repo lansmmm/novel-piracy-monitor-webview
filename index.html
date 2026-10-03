@@ -103,6 +103,13 @@
   /* 停止 / 我已过验证，继续（当前都是禁用态） */
   .btn-disabled { background: var(--disabled-bg); color: var(--muted); }
 
+  /* 停止按钮「启用」时的红色 */
+  .btn-danger { background: #E63946; color: #FFFFFF; }
+
+  .btn:disabled,
+  .btn-sm:disabled,
+  .btn-xs:disabled { cursor: not-allowed; }
+
   /* 纯文字按钮：来源行的「全选 / 取消」 */
   .btn-text {
     height: 28px;
@@ -386,7 +393,7 @@
       <input id="pagesInput" class="input input-pages" type="text" placeholder="自动">
     </div>
     <button id="btnBookmark" class="btn btn-soft">保存为书签</button>
-    <button id="btnStop" class="btn btn-disabled">停止</button>
+    <button id="btnStop" class="btn btn-disabled" disabled>停止</button>
     <button id="btnCaptchaContinue" class="btn btn-disabled">我已过验证，继续</button>
     <span class="spacer"></span>
     <button id="btnClearCookies" class="btn btn-soft-green">清 cookies</button>
@@ -421,8 +428,6 @@
   <div id="bookmarkRow" class="chips">
     <span class="chip"><span class="chip-name">斗破苍穹</span><span class="chip-count">5</span><span class="chip-arrow">▼</span></span>
     <span class="chip"><span class="chip-name">纯白恶魔</span><span class="chip-count">1</span><span class="chip-arrow">▼</span></span>
-    <span class="chip"><span class="chip-name">我当天道那些年</span><span class="chip-count">6</span><span class="chip-arrow">▼</span></span>
-    <span class="chip"><span class="chip-name">至亲至疏</span><span class="chip-count">2</span><span class="chip-arrow">▼</span></span>
   </div>
 </section>
 
@@ -499,16 +504,21 @@
 
 <script>
 /* ======================================================================
-   第 3 步：Python ↔ JS 数据流
+   批 1-1：搜索启动骨架
    - Python 侧用 window.evaluate_js("window.appendLog('...')") 主动推送
-   - 这里只负责“收消息并画出来”，不含任何业务逻辑
+   - 本文件负责：收集界面输入 → 校验 → 调 start_search；并接收 setSearching
+     / appendLog 两个 Python 回调把界面画出来
    ====================================================================== */
 (function () {
   'use strict';
 
   var logBody = document.getElementById('logBody');
-  var btnStart = document.getElementById('btnHeartbeatStart');
-  var btnStop = document.getElementById('btnHeartbeatStop');
+  var bookInput = document.getElementById('bookInput');
+  var pagesInput = document.getElementById('pagesInput');
+  var btnSearch = document.getElementById('btnSearch');
+  var btnSearchStop = document.getElementById('btnStop');
+  var btnHbStart = document.getElementById('btnHeartbeatStart');
+  var btnHbStop = document.getElementById('btnHeartbeatStop');
 
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
@@ -542,15 +552,72 @@
     return !!(window.pywebview && window.pywebview.api);
   }
 
-  btnStart.addEventListener('click', function () {
+  /* ==================== 搜索中状态切换 ==================== */
+  /* Python 侧搜完/开跑时会调 window.setSearching(true/false) */
+  window.setSearching = function (isSearching) {
+    var on = !!isSearching;
+
+    // 搜索按钮：搜索中 → 灰掉禁用
+    btnSearch.disabled = on;
+    btnSearch.classList.toggle('btn-primary', !on);
+    btnSearch.classList.toggle('btn-disabled', on);
+
+    // 停止按钮：搜索中 → 亮红可点
+    btnSearchStop.disabled = !on;
+    btnSearchStop.classList.toggle('btn-disabled', !on);
+    btnSearchStop.classList.toggle('btn-danger', on);
+
+    return on;
+  };
+
+  /* ==================== 读取界面输入 ==================== */
+  function getCheckedSources() {
+    var boxes = document.querySelectorAll('input[name="source"]:checked');
+    return Array.prototype.slice.call(boxes).map(function (el) { return el.value; });
+  }
+
+  function getPagesArg() {
+    var raw = (pagesInput.value || '').trim();
+    if (raw === '') { return 'auto'; }                       // 留空 = 自动
+    if (/^\d+$/.test(raw)) { return parseInt(raw, 10); }     // 纯数字 → int
+    return raw;                                              // 其他原样交给后端
+  }
+
+  /* ==================== 搜索 / 停止 ==================== */
+  btnSearch.addEventListener('click', function () {
+    var book = (bookInput.value || '').trim();
+    var sources = getCheckedSources();
+    var pages = getPagesArg();
+
+    if (!book) { window.appendLog('[提示] 请先输入书名'); return; }
+    if (!sources.length) { window.appendLog('[提示] 请至少勾选一个来源'); return; }
+    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+
+    window.pywebview.api.start_search(book, sources, pages).then(function (res) {
+      if (res === 'already_running') {
+        window.appendLog('[提示] 上一次搜索还在跑，请稍候');
+      }
+    });
+  });
+
+  btnSearchStop.addEventListener('click', function () {
+    window.appendLog('收到停止指令（模拟）');
+    window.setSearching(false);      // 本批：只恢复按钮状态
+  });
+
+  /* ==================== 心跳（链路验证用） ==================== */
+  btnHbStart.addEventListener('click', function () {
     if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
     window.pywebview.api.start_heartbeat();
   });
 
-  btnStop.addEventListener('click', function () {
+  btnHbStop.addEventListener('click', function () {
     if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
     window.pywebview.api.stop_heartbeat();
   });
+
+  /* 初始状态：搜索按钮可用、停止按钮禁用 */
+  window.setSearching(false);
 })();
 </script>
 
