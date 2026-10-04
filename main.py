@@ -240,6 +240,8 @@ def classify_source(label, r):
         return "贴吧"
     if "mp.weixin.qq.com" in url or "weixin.qq.com" in url or "weixin.sogou.com" in url:
         return "微信"
+    if "weibo.com" in url or "weibo.cn" in url:
+        return "微博"
     if r.get("is_zhinengti"):
         return "文心"
     return label
