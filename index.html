@@ -31,8 +31,7 @@
     padding: 12px;                /* 同 Flet page.padding=12 */
     background: var(--bg);
     color: var(--text);
-    font-family: "HarmonyOS Sans SC", "HarmonyOS Sans", "Microsoft YaHei UI",
-                 "Microsoft YaHei", "Segoe UI", sans-serif;
+    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Hiragino Sans GB", sans-serif;
     font-size: 14px;
     overflow: hidden;
     display: flex;
@@ -494,7 +493,7 @@
     color: #E8F0F2;
     white-space: pre-wrap;
     word-break: break-all;
-    font-family: Consolas, "HarmonyOS Sans SC", "Microsoft YaHei UI", monospace;
+    font-family: Consolas, "Microsoft YaHei", "PingFang SC", monospace;
   }
 
   .log-line.alert { color: #FF6B6B; }
@@ -628,17 +627,17 @@
   <div class="row tight">
     <button id="btnTbSelectAll" class="btn-sm">全选/取消</button>
     <span class="sep"></span>
-    <button id="btnTbOpen" class="btn-sm">批量打开</button>
-    <button id="btnTbCopy" class="btn-sm">批量复制</button>
+    <button id="btnTbOpen" class="btn-sm btn-sm-green">批量打开</button>
+    <button id="btnTbCopy" class="btn-sm btn-sm-green">批量复制</button>
     <span class="sep"></span>
-    <button id="btnTbWhite" class="btn-sm btn-sm-green">加白名单</button>
-    <button id="btnTbWhiteWords" class="btn-sm btn-sm-green">白名单词</button>
-    <button id="btnTbResetWhite" class="btn-sm btn-sm-green">重置白名单</button>
+    <button id="btnTbWhite" class="btn-sm">加白名单</button>
+    <button id="btnTbWhiteWords" class="btn-sm">白名单词</button>
+    <button id="btnTbResetWhite" class="btn-sm btn-sm-gray">重置白名单</button>
     <span class="sep"></span>
-    <button id="btnTbHistory" class="btn-sm">载入历史数据</button>
-    <button id="btnTbExport" class="btn-sm btn-sm-green">导出结果</button>
-    <button id="btnTbClearSeen" class="btn-sm btn-sm-green">清空历史记录</button>
+    <button id="btnTbExport" class="btn-sm">导出结果</button>
     <button id="btnTbClear" class="btn-sm btn-sm-gray">清空列表</button>
+    <button id="btnTbHistory" class="btn-sm">载入历史数据</button>
+    <button id="btnTbClearSeen" class="btn-sm btn-sm-gray">清空历史记录</button>
     <span class="spacer"></span>
     <input id="tableSearchInput" class="input input-search" type="text"
            placeholder="筛选标题/摘要/链接">
@@ -1668,6 +1667,23 @@
     });
   }
 
+  /* ==================== 清 cookies ==================== */
+  var btnClearCookies = document.getElementById('btnClearCookies');
+  if (btnClearCookies) {
+    btnClearCookies.addEventListener('click', function () {
+      /* confirm 在个别 WebView 后端可能不可用 → 抛错时按「确认」继续 */
+      var ok = true;
+      try {
+        ok = window.confirm('清除 cookies？\n将删除 baidu_engine_data 目录（含登录态）。\n建议先停止正在进行的搜索。');
+      } catch (e) {
+        ok = true;
+      }
+      if (ok === false) { return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.clear_cookies();
+    });
+  }
+
   /* ==================== 行勾选 / 白名单 ==================== */
   function allRows() {
     return Array.prototype.slice.call(tableBody.children);
@@ -1710,6 +1726,18 @@
       var rows = allRows();
       var allChecked = rows.length > 0 && checkedRows().length === rows.length;
       setAllRows(!allChecked);
+    });
+  }
+
+  /* 来源行「全选 / 取消」按钮：任意一个没勾 → 全勾；全勾了 → 全不勾 */
+  var btnToggleSources = document.getElementById('btnToggleSources');
+  if (btnToggleSources) {
+    btnToggleSources.addEventListener('click', function () {
+      var cbs = document.querySelectorAll('input[name=source]');
+      if (cbs.length === 0) { return; }
+      var anyOff = false;
+      cbs.forEach(function (cb) { if (!cb.checked) { anyOff = true; } });
+      cbs.forEach(function (cb) { cb.checked = anyOff; });
     });
   }
 
@@ -1864,13 +1892,11 @@
 
   switchFrontend.addEventListener('change', function () {
     var on = !!switchFrontend.checked;
-    window.appendLog('前台模式：' + (on ? '开（显示浏览器 + 验证码弹窗）' : '关（后台无头，不弹窗）'));
     if (apiReady()) { window.pywebview.api.set_frontend_mode(on); }
   });
 
   switchDeep.addEventListener('change', function () {
     var on = !!switchDeep.checked;
-    window.appendLog('深度模式：' + (on ? '开（PC + 移动端一起搜）' : '关（每个来源只搜主渠道）'));
     if (apiReady()) { window.pywebview.api.set_deep_mode(on); }
   });
 

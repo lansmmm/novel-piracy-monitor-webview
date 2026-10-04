@@ -12,6 +12,7 @@
 
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -29,12 +30,19 @@ from utils import title_or_summary_matches, load_json, save_json
 import single_instance
 
 # ==================== 路径 ====================
+# 数据目录（读写）：打包后是 exe 旁边；开发时是源码目录
 if getattr(sys, "frozen", False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-INDEX_HTML = os.path.join(BASE_DIR, "index.html")
+# 资源目录（只读）：打包后是 PyInstaller 解压的 _MEIPASS；开发时是源码目录
+if getattr(sys, "frozen", False):
+    RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+else:
+    RESOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+INDEX_HTML = os.path.join(RESOURCE_DIR, "index.html")
 
 # Edge 持久化用户目录（保留登录态 / cookies，跟 flet 版同名）
 USER_DATA_DIR = os.path.join(BASE_DIR, "baidu_engine_data")
@@ -548,6 +556,21 @@ class Api:
             })
         print(f"[seen_urls] load_history → {len(result)} 条")
         return result
+
+    # ==================== 清 cookies ====================
+    def clear_cookies(self):
+        """删除 USER_DATA_DIR（Edge 持久化目录）"""
+        try:
+            if os.path.isdir(USER_DATA_DIR):
+                shutil.rmtree(USER_DATA_DIR, ignore_errors=True)
+                self.push_log(f"已清除 cookies 目录：{USER_DATA_DIR}")
+                return "ok"
+            else:
+                self.push_log("cookies 目录不存在，无需清除")
+                return "empty"
+        except Exception as e:                                    # noqa: BLE001
+            self.push_log(f"清除 cookies 失败：{e}")
+            return "error"
 
     # ==================== 白名单（基础版） ====================
     def add_to_whitelist(self, urls):
