@@ -1601,6 +1601,73 @@
     });
   }
 
+  /* ==================== 批量打开 / 批量复制 / 载入历史（批 6） ==================== */
+  /* 三个按钮原先都没有点击逻辑，这里补齐；选中行集合复用 getActionRows() */
+  var btnTbOpen = document.getElementById('btnTbOpen');
+  var btnTbCopy = document.getElementById('btnTbCopy');
+  var btnTbHistory = document.getElementById('btnTbHistory');
+
+  /* 「批量打开」：打开勾选/选中行的 URL（走 Python webbrowser.open） */
+  if (btnTbOpen) {
+    btnTbOpen.addEventListener('click', function () {
+      var rows = getActionRows();
+      if (rows.length === 0) {
+        window.appendLog('没有选中任何行');
+        return;
+      }
+      var urls = rows.map(function (r) { return (r.dataset.url || '').trim(); })
+                     .filter(function (u) { return !!u; });
+      if (urls.length === 0) {
+        window.appendLog('选中的行没有链接');
+        return;
+      }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      urls.forEach(function (u) { window.pywebview.api.open_url(u); });
+      window.appendLog('已打开 ' + urls.length + ' 个链接');
+    });
+  }
+
+  /* 「批量复制」：把勾选/选中行的 URL 按行拼起来写剪贴板 */
+  if (btnTbCopy) {
+    btnTbCopy.addEventListener('click', function () {
+      var rows = getActionRows();
+      var urls = rows.map(function (r) { return (r.dataset.url || '').trim(); })
+                     .filter(function (u) { return !!u; });
+      if (urls.length === 0) {
+        window.appendLog('没有选中任何行');
+        return;
+      }
+      actCopyUrls(urls);          // 已含剪贴板 + textarea 回退（L1193）
+    });
+  }
+
+  /* 「载入历史数据」：读 seen_urls.json，逐条追加到表格（不清空已有结果） */
+  if (btnTbHistory) {
+    btnTbHistory.addEventListener('click', function () {
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.load_history().then(function (records) {
+        if (!records || records.length === 0) {
+          window.appendLog('历史记录为空');
+          return;
+        }
+        records.forEach(function (rec) {
+          window.appendRow(JSON.stringify({
+            source: rec.source || '历史',
+            title: rec.book || '(无书名)',
+            date: '',
+            summary: '',
+            url: rec.url,
+            keyword: '',
+            srcId: '',
+            book: rec.book || '',
+            isNew: false,
+          }));
+        });
+        window.appendLog('已载入历史数据 ' + records.length + ' 条');
+      });
+    });
+  }
+
   /* ==================== 行勾选 / 白名单 ==================== */
   function allRows() {
     return Array.prototype.slice.call(tableBody.children);

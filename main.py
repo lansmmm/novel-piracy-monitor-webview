@@ -87,38 +87,69 @@ _current_adapter = {"v": None}
 # 会话内去重：同一来源的同一 URL 只显示一次（key = (来源中文名, url)）
 _displayed_urls = set()
 
-# ==================== 历史记录 / 新链接（批 5-D） ====================
-# 单文件去重库：seen_urls.json 里就是一个 URL 数组，不区分来源
-_seen_urls = set()
+# ==================== 历史记录 / 新链接（批 5-D + 批 6） ====================
+# 单文件去重库：seen_urls.json 是对象 {"url": {"book": 书名, "source": 来源}}
+_seen_urls = {}
 _seen_urls_loaded = {"v": False}
 _seen_urls_lock = threading.Lock()
 
 
 def _load_seen_urls():
-    """从 seen_urls.json 读回历史 URL 集合（只读一次）"""
+    """从 seen_urls.json 读回历史记录（只读一次）
+
+    兼容两种格式：
+      - 老格式：["url1", "url2"]  → 自动迁移成对象格式并立刻落盘
+      - 新格式：{"url": {"book": …, "source": …}}
+    """
     global _seen_urls
     if _seen_urls_loaded["v"]:
         return
     try:
         with open(SEEN_URLS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, list):
-            _seen_urls = set(str(u) for u in data if u)
     except Exception:                                             # noqa: BLE001
-        pass
+        data = {}
+
+    # 老格式：list of str → 迁移成 dict
+    if isinstance(data, list):
+        migrated = {}
+        for u in data:
+            if u:
+                migrated[str(u)] = {"book": "", "source": ""}
+        _seen_urls = migrated
+        _seen_urls_loaded["v"] = True
+        _save_seen_urls()        # 立刻落盘新格式
+        return
+
+    if isinstance(data, dict):
+        # 清洗：确保 value 是 dict 且有 book / source
+        cleaned = {}
+        for k, v in data.items():
+            if not k:
+                continue
+            if isinstance(v, dict):
+                cleaned[str(k)] = {
+                    "book": str(v.get("book", "")),
+                    "source": str(v.get("source", "")),
+                }
+            else:
+                cleaned[str(k)] = {"book": "", "source": ""}
+        _seen_urls = cleaned
+    else:
+        _seen_urls = {}
     _seen_urls_loaded["v"] = True
 
 
 def _save_seen_urls():
-    """写回 seen_urls.json（URL 数组，已排序）"""
+    """写回 seen_urls.json（{url: {book, source}} 对象）"""
     try:
         with open(SEEN_URLS_FILE, "w", encoding="utf-8") as f:
-            json.dump(sorted(_seen_urls), f, ensure_ascii=False, indent=0)
+            json.dump(_seen_urls, f, ensure_ascii=False, indent=2)
     except Exception as e:                                        # noqa: BLE001
         print(f"[seen_urls] save failed: {e}")
 
 
-def _mark_seen(url):
+def _mark_seen(url, book="", source=""):
     """返回 True 表示这是新链接（之前没见过），False 表示见过"""
     if not url:
         return False
@@ -126,8 +157,9 @@ def _mark_seen(url):
     with _seen_urls_lock:
         if url in _seen_urls:
             return False
-        _seen_urls.add(url)
+        _seen_urls[url] = {"book": str(book or ""), "source": str(source or "")}
         return True
+
 
 
 # ==================== 搜索统计（批 5-B，跨轮累计） ====================
@@ -500,6 +532,22 @@ class Api:
         self.push_log(f"已清空历史记录（原 {n} 条 URL）")
         print(f"[seen_urls] cleared {n} 条")
         return n
+
+    # ==================== 载入历史数据（批 6） ====================
+    def load_history(self):
+        """返回历史记录列表（给前端「载入历史数据」渲染）"""
+        _load_seen_urls()
+        result = []
+        for url, meta in _seen_urls.items():
+            if not isinstance(meta, dict):
+                meta = {}
+            result.append({
+                "url": url,
+                "book": meta.get("book", ""),
+                "source": meta.get("source", ""),
+            })
+        print(f"[seen_urls] load_history → {len(result)} 条")
+        return result
 
     # ==================== 白名单（基础版） ====================
     def add_to_whitelist(self, urls):
@@ -1034,7 +1082,7 @@ class Api:
                                     _displayed_urls.add(key)
                                 # ★ 批 5-D：只对最终要推送的行判「新链接」
                                 #   （放在 _displayed_urls 去重之后，避免被过滤的行污染集合）
-                                is_new = _mark_seen(url) if url else False
+                                is_new = _mark_seen(url, book, src_label) if url else False
                                 self.push_row({
                                     "source": src_label,
                                     "title": r.get("title", ""),
