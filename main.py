@@ -57,8 +57,12 @@ APP_TITLE = "打盗全家捅"
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 800
 
-HEARTBEAT_INTERVAL = 0.5   # 心跳间隔（秒）
-HEARTBEAT_TIMES = 20       # 推多少行后自然停下
+# 搜索统计（批 5-B）：本机累计数据，不进 git
+STATS_FILE = os.path.join(BASE_DIR, "搜索统计.json")
+STATS_TXT_FILE = os.path.join(BASE_DIR, "搜索统计.txt")
+
+# 历史记录（批 5-D）：只存 URL 数组，不区分来源；不在集合里 = 新链接
+SEEN_URLS_FILE = os.path.join(BASE_DIR, "seen_urls.json")
 
 SEARCH_LOG_INTERVAL = 0.5  # 模拟搜索日志每行之间的间隔（秒）
 
@@ -82,6 +86,131 @@ _current_adapter = {"v": None}
 
 # 会话内去重：同一来源的同一 URL 只显示一次（key = (来源中文名, url)）
 _displayed_urls = set()
+
+# ==================== 历史记录 / 新链接（批 5-D） ====================
+# 单文件去重库：seen_urls.json 里就是一个 URL 数组，不区分来源
+_seen_urls = set()
+_seen_urls_loaded = {"v": False}
+_seen_urls_lock = threading.Lock()
+
+
+def _load_seen_urls():
+    """从 seen_urls.json 读回历史 URL 集合（只读一次）"""
+    global _seen_urls
+    if _seen_urls_loaded["v"]:
+        return
+    try:
+        with open(SEEN_URLS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            _seen_urls = set(str(u) for u in data if u)
+    except Exception:                                             # noqa: BLE001
+        pass
+    _seen_urls_loaded["v"] = True
+
+
+def _save_seen_urls():
+    """写回 seen_urls.json（URL 数组，已排序）"""
+    try:
+        with open(SEEN_URLS_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(_seen_urls), f, ensure_ascii=False, indent=0)
+    except Exception as e:                                        # noqa: BLE001
+        print(f"[seen_urls] save failed: {e}")
+
+
+def _mark_seen(url):
+    """返回 True 表示这是新链接（之前没见过），False 表示见过"""
+    if not url:
+        return False
+    _load_seen_urls()
+    with _seen_urls_lock:
+        if url in _seen_urls:
+            return False
+        _seen_urls.add(url)
+        return True
+
+
+# ==================== 搜索统计（批 5-B，跨轮累计） ====================
+_stats = {
+    "total_searches": 0,       # 总搜索轮数
+    "total_captchas": 0,       # 总验证码次数
+    "by_source": {},           # {来源label: 命中总数}
+    "last_updated": "",
+}
+_stats_loaded = {"v": False}
+_stats_lock = threading.Lock()
+
+
+def _load_stats():
+    """从 搜索统计.json 读回累计值（只读一次）"""
+    global _stats
+    if _stats_loaded["v"]:
+        return
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _stats["total_searches"] = int(data.get("total_searches", 0))
+            _stats["total_captchas"] = int(data.get("total_captchas", 0))
+            bs = data.get("by_source", {})
+            if isinstance(bs, dict):
+                _stats["by_source"] = dict(bs)
+    except Exception:                                             # noqa: BLE001
+        pass
+    _stats_loaded["v"] = True
+
+
+def _save_stats():
+    """写回 搜索统计.json，并生成人看的 搜索统计.txt"""
+    try:
+        import datetime as _dt
+        _stats["last_updated"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_stats, f, ensure_ascii=False, indent=2)
+        # 生成人看的 txt
+        lines = [
+            "打盗全家捅 — 搜索统计",
+            f"更新时间：{_stats['last_updated']}",
+            "",
+            f"总搜索轮数：{_stats['total_searches']}",
+            f"总验证码次数：{_stats['total_captchas']}",
+            "",
+            "按来源累计命中：",
+        ]
+        if _stats["by_source"]:
+            for label, n in sorted(_stats["by_source"].items(), key=lambda x: -x[1]):
+                lines.append(f"  {label}: {n}")
+        else:
+            lines.append("  （暂无数据）")
+        with open(STATS_TXT_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+    except Exception as e:                                        # noqa: BLE001
+        print(f"[stats] save failed: {e}")
+
+
+def _stats_add_search():
+    """本轮搜索 +1"""
+    with _stats_lock:
+        _load_stats()
+        _stats["total_searches"] += 1
+        _save_stats()
+
+
+def _stats_add_captcha():
+    """这轮撞了一次验证码"""
+    with _stats_lock:
+        _load_stats()
+        _stats["total_captchas"] += 1
+        _save_stats()
+
+
+def _stats_add_source_hits(label, n):
+    """某来源命中 n 条（跨轮累计）"""
+    with _stats_lock:
+        _load_stats()
+        _stats["by_source"][label] = _stats["by_source"].get(label, 0) + n
+        _save_stats()
+
 
 # 白名单（简化版）：common 白名单 URL 集合 + 懒加载标志 + 读写锁
 _whitelist_common = set()
@@ -308,8 +437,6 @@ class Api:
 
     def __init__(self):
         self._window = None
-        self._hb_thread = None
-        self._hb_stop = threading.Event()
         self._search_thread = None
 
     # ==================== 绑定窗口 ====================
@@ -361,6 +488,18 @@ class Api:
         _displayed_urls.clear()
         print("[dedupe] 已清空已显示 URL 集合")
         return "ok"
+
+    # ==================== 清空历史记录（批 5-D） ====================
+    def clear_seen_urls(self):
+        """清空 seen_urls.json：清空后以前搜过的 URL 会重新标记为新盗文"""
+        _load_seen_urls()
+        with _seen_urls_lock:
+            n = len(_seen_urls)
+            _seen_urls.clear()
+            _save_seen_urls()
+        self.push_log(f"已清空历史记录（原 {n} 条 URL）")
+        print(f"[seen_urls] cleared {n} 条")
+        return n
 
     # ==================== 白名单（基础版） ====================
     def add_to_whitelist(self, urls):
@@ -560,6 +699,78 @@ class Api:
         print(f"[mode] 深度模式 = {_deep_mode['v']}")
         return "ok"
 
+    # ==================== 搜索统计（批 5-B，给以后界面用） ====================
+    def get_stats(self):
+        """返回累计统计 dict（总轮数 / 总验证码次数 / 各来源累计命中）"""
+        with _stats_lock:
+            _load_stats()
+            return {
+                "total_searches": _stats["total_searches"],
+                "total_captchas": _stats["total_captchas"],
+                "by_source": dict(_stats["by_source"]),
+                "last_updated": _stats["last_updated"],
+            }
+
+    # ==================== 导出结果（批 5-C） ====================
+    def export_results(self, rows):
+        """把前端「当前可见行」导出成 txt（保存到桌面）
+
+        rows: list of dict，每项含 {book: str, source: str, url: str}
+        按 (书名, 来源) 分组，组内只列 URL，组间空一行
+        """
+        import datetime as _dt
+        if not isinstance(rows, list) or not rows:
+            self.push_log("当前没有可导出的内容")
+            return "empty"
+
+        # 分组：(book, source) -> [url, ...]（dict 保序，记录首次出现顺序）
+        groups = {}
+        order = []
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            url = (r.get("url") or "").strip()
+            if not url:
+                continue
+            book = (r.get("book") or "").strip() or "(无书名)"
+            src = (r.get("source") or "").strip() or "(无来源)"
+            key = (book, src)
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(url)
+
+        if not groups:
+            self.push_log("没有可导出的 URL")
+            return "empty"
+
+        lines = []
+        for i, key in enumerate(order):
+            if i > 0:
+                lines.append("")    # 组间空行
+            book, src = key
+            lines.append(f"{book} {src}")
+            for u in groups[key]:
+                lines.append(u)
+
+        # 写文件到桌面
+        try:
+            desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+            if not os.path.isdir(desktop):
+                desktop = os.path.expanduser("~")
+            stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(desktop, f"打盗全家捅监控_导出_{stamp}.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            total_urls = sum(len(g) for g in groups.values())
+            self.push_log(f"已导出 {total_urls} 条（{len(groups)} 组）到：{path}")
+            print(f"[export] {total_urls} urls / {len(groups)} groups → {path}")
+            return "ok"
+        except Exception as e:                                    # noqa: BLE001
+            self.push_log(f"导出失败：{e}")
+            print(f"[export] failed: {e!r}", file=sys.stderr)
+            return "error"
+
     # ==================== 用系统浏览器打开链接 ====================
     def open_url(self, url):
         """表格里点 url 调这里，走 Python 打开，避免 WebView 内部跳转"""
@@ -634,6 +845,7 @@ class Api:
         _displayed_urls.clear()          # 每次搜索清空会话内去重集合
         _load_whitelist()                # 确保白名单已加载，方便给行打 is_white
         _load_whitelist_words()          # 确保白名单词已加载
+        _stats_add_search()              # 批 5-B：本轮搜索轮数 +1（写入 搜索统计.json）
         try:
             src_text = " / ".join(SOURCE_LABELS.get(s, s) for s in sources) or "（无）"
             self.push_log(f"已勾选来源：{src_text}")
@@ -646,6 +858,12 @@ class Api:
                 )
             )
             self.push_log("正在打开浏览器...")
+
+            # ==================== 批 5-A：本轮搜索汇总统计 ====================
+            _t_start = time.time()
+            _stat = {}            # {来源 label: 命中条数（累加所有搜索词）}
+            _zero_terms = []      # 0 结果的 (来源 label, 搜索词) 组合
+            _total_pushed = 0     # 本轮命中总条数
 
             os.makedirs(USER_DATA_DIR, exist_ok=True)
 
@@ -720,6 +938,7 @@ class Api:
                             max_pages = 10
 
                     all_results = []
+                    _job_matched = 0                  # 本作业（来源 × 搜索词）命中数
                     adapter.captcha_hit = False
                     try:
                         engine = engine_cls(adapter)
@@ -740,6 +959,7 @@ class Api:
                             #   这次 fetch 的结果不可信，按模式分别处理
                             if adapter.captcha_hit:
                                 adapter.captcha_hit = False
+                                _stats_add_captcha()          # 批 5-B：验证码次数 +1
                                 if _stop_event.is_set():
                                     break
                                 if _frontend_mode["v"] and adapter.wait_continue_event.is_set():
@@ -790,6 +1010,11 @@ class Api:
                                 f"{len(matched)} / 原始 {len(page_results)} 条"
                             )
 
+                            # ★ 批 5-A：按来源累计命中数（搜索词之间的累加）
+                            _stat[label] = _stat.get(label, 0) + len(matched)
+                            _job_matched += len(matched)
+                            _total_pushed += len(matched)
+
                             # 3) 归类 + 推送（同一来源同一 URL 只显示一次）
                             _wl_dirty = False
                             for r in matched:
@@ -807,6 +1032,9 @@ class Api:
                                     continue
                                 if url:
                                     _displayed_urls.add(key)
+                                # ★ 批 5-D：只对最终要推送的行判「新链接」
+                                #   （放在 _displayed_urls 去重之后，避免被过滤的行污染集合）
+                                is_new = _mark_seen(url) if url else False
                                 self.push_row({
                                     "source": src_label,
                                     "title": r.get("title", ""),
@@ -814,7 +1042,9 @@ class Api:
                                     "summary": r.get("summary", ""),
                                     "url": r.get("url", ""),
                                     "keyword": keyword,
+                                    "book": book,          # 批 5-C：导出按 (书名, 来源) 分组用
                                     "srcId": engine_id,
+                                    "isNew": is_new,       # 批 5-D：新链接标记
                                     "is_white": bool(url) and url in _whitelist_common,
                                 })
                             if _wl_dirty:
@@ -828,6 +1058,14 @@ class Api:
                         self.push_log(f"{label} 出错：{e}")
 
                     self.push_log(f"{label} 共 {len(all_results)} 条")
+
+                    # ★ 批 5-A：本作业一条都没命中 → 记进 0 结果清单
+                    if _job_matched == 0:
+                        _zero_terms.append((label, keyword))
+                    else:
+                        # ★ 批 5-B：按来源累计命中（跨轮写盘）
+                        _stats_add_source_hits(label, _job_matched)
+
                     if _stop_event.is_set():
                         break
 
@@ -842,6 +1080,28 @@ class Api:
             else:
                 self.push_log("搜索完成")
 
+            # ==================== 批 5-A：搜索汇总 ====================
+            _elapsed = int(time.time() - _t_start)
+            self.push_log("━━━━━━ 搜索汇总 ━━━━━━")
+            self.push_log(f"本轮共 {_total_pushed} 条结果，用时 {_elapsed} 秒")
+
+            if _stat:
+                self.push_log("按来源：")
+                for _lb, _n in sorted(_stat.items(), key=lambda x: -x[1]):
+                    self.push_log(f"  {_lb}: {_n} 条")
+            else:
+                self.push_log("  本轮无结果")
+
+            if _zero_terms:
+                self.push_log(f"0 结果搜索词（共 {len(_zero_terms)} 个组合）：")
+                for _lb, _kw in _zero_terms[:20]:
+                    self.push_log(f"  [{_lb}] {_kw}")
+                if len(_zero_terms) > 20:
+                    self.push_log(f"  ...（还有 {len(_zero_terms) - 20} 个）")
+
+            # ★ 批 5-D：本轮历史记录落盘（搜索结束后、finally 之前）
+            _save_seen_urls()
+
         except Exception:                                         # noqa: BLE001
             tb = traceback.format_exc()
             print(tb, file=sys.stderr)
@@ -852,46 +1112,6 @@ class Api:
             _stop_event.clear()
             _current_adapter["v"] = None
             print("[search] 结束")
-
-    # ==================== 模拟心跳（链路验证用） ====================
-    def start_heartbeat(self):
-        """启动后台线程：每 0.5 秒推一行「心跳 N」，N 从 1 递增到 20"""
-        if self._hb_thread is not None and self._hb_thread.is_alive():
-            print("[hb] 已在运行，忽略本次 start")
-            return "already_running"
-
-        self._hb_stop.clear()
-        self._hb_thread = threading.Thread(
-            target=self._heartbeat_loop, name="heartbeat", daemon=True
-        )
-        self._hb_thread.start()
-        print("[hb] 已启动（后台线程，非主线程）")
-        return "started"
-
-    def stop_heartbeat(self):
-        """停止后台线程"""
-        self._hb_stop.set()
-        print("[hb] 收到停止请求")
-        return "stopping"
-
-    def _heartbeat_loop(self):
-        for n in range(1, HEARTBEAT_TIMES + 1):
-            if self._hb_stop.is_set():
-                print(f"[hb] 被停止（第 {n} 行未推）")
-                return
-
-            try:
-                self.push_log(f"心跳 {n}")
-            except Exception as exc:                      # noqa: BLE001
-                print(f"[hb] push_log 失败：{exc!r}", file=sys.stderr)
-                raise
-
-            # 用 wait 而不是 sleep，停止时能立刻退出
-            if self._hb_stop.wait(HEARTBEAT_INTERVAL):
-                print(f"[hb] 被停止（已推 {n} 行）")
-                return
-
-        print(f"[hb] 推完 {HEARTBEAT_TIMES} 行，自然结束")
 
 
 def _bring_to_front(window):

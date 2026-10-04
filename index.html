@@ -637,6 +637,7 @@
     <span class="sep"></span>
     <button id="btnTbHistory" class="btn-sm">载入历史数据</button>
     <button id="btnTbExport" class="btn-sm btn-sm-green">导出结果</button>
+    <button id="btnTbClearSeen" class="btn-sm btn-sm-green">清空历史记录</button>
     <button id="btnTbClear" class="btn-sm btn-sm-gray">清空列表</button>
     <span class="spacer"></span>
     <input id="tableSearchInput" class="input input-search" type="text"
@@ -654,7 +655,6 @@
         <div class="th col-date">日期</div>
         <div class="th col-abs">摘要</div>
         <div class="th col-url">最终 url</div>
-        <div class="th col-menu"></div>
       </div>
       <!-- 数据行稍后追加：<div class="table-row">…</div>（每行底部自带浅灰分隔线） -->
       <div id="tableBody"></div>
@@ -680,11 +680,6 @@
 
 <!-- ============ 卡C：日志区 ============ -->
 <section class="log" id="log">
-  <!-- 右上角工具条：第 3 步链路验证用的模拟心跳 -->
-  <div class="log-bar">
-    <button id="btnHeartbeatStart" class="btn-xs btn-xs-green">开始心跳</button>
-    <button id="btnHeartbeatStop" class="btn-xs btn-xs-gray">停止心跳</button>
-  </div>
   <div class="log-body" id="logBody"></div>
 </section>
 
@@ -736,8 +731,6 @@
   var pagesInput = document.getElementById('pagesInput');
   var btnSearch = document.getElementById('btnSearch');
   var btnSearchStop = document.getElementById('btnStop');
-  var btnHbStart = document.getElementById('btnHeartbeatStart');
-  var btnHbStop = document.getElementById('btnHeartbeatStop');
   var btnTbClear = document.getElementById('btnTbClear');
   var btnTbWhite = document.getElementById('btnTbWhite');
   var btnTbResetWhite = document.getElementById('btnTbResetWhite');
@@ -844,6 +837,9 @@
     row.dataset.date = (r.date === null || r.date === undefined || r.date === '') ? '未知' : String(r.date);
     /* 来源页签筛选用：来源中文名（批 4-A-4） */
     row.dataset.source = (r.source === null || r.source === undefined) ? '' : String(r.source);
+    /* 导出分组用：书名（批 5-C） */
+    row.dataset.book = (r.book === null || r.book === undefined || r.book === '')
+      ? '' : String(r.book);
     /* 右键菜单「打开源链接」用：原始关键词 + 引擎 id（批 4-A-3） */
     row.dataset.keyword = (r.keyword === null || r.keyword === undefined) ? '' : String(r.keyword);
     row.dataset.srcId = (r.srcId === null || r.srcId === undefined) ? '' : String(r.srcId);
@@ -872,25 +868,25 @@
     row.appendChild(checkCell);
 
     row.appendChild(makeCell('来源', 'td col-src', r.source));
-    row.appendChild(makeCell('标题', 'td col-title', r.title));
+
+    /* 标题格（批 5-D）：新链接 → 加粗 + 前缀【新盗文！】 */
+    var isNew = !!r.isNew;
+    var titleCell = document.createElement('div');
+    titleCell.className = 'td col-title';
+    var titleText = (r.title === null || r.title === undefined) ? '' : String(r.title);
+    if (isNew) { titleText = '【新盗文！】' + titleText; }
+    titleCell.textContent = titleText;
+    titleCell.title = titleText;
+    titleCell.setAttribute('data-label', '标题');
+    if (isNew) { titleCell.style.fontWeight = 'bold'; }
+    row.appendChild(titleCell);
+
     row.appendChild(makeCell('日期', 'td col-date', r.date));
     row.appendChild(makeCell('摘要', 'td col-abs', r.summary));
     row.appendChild(makeUrlCell(r.url));
 
-    var menu = document.createElement('div');
-    menu.className = 'td col-menu';
-    menu.textContent = '⋯';
-    /* 点 ⋯ → 在按钮下方弹出同一张菜单（批 4-A-3） */
-    menu.addEventListener('click', function (e) {
-      e.stopPropagation();
-      _ctxTargetRow = row;
-      var rect = menu.getBoundingClientRect();
-      window.showRowMenu(rect.left, rect.bottom + 2);
-    });
-    row.appendChild(menu);
-
     /* 行点击选中：单击单选 / Ctrl 累加 / Shift 区间
-       点勾选框、URL、⋯ 菜单、浮层 → 不触发行选中 */
+       点勾选框、URL、菜单、浮层 → 不触发行选中 */
     row.addEventListener('click', function (e) {
       if (e.target.closest('input[type=checkbox]')) { return; }
       if (e.target.closest('a')) { return; }
@@ -1558,6 +1554,53 @@
     });
   }
 
+  /* ==================== 导出结果（批 5-C） ==================== */
+  /* 只导出「当前筛选下可见」的行：页签 / 搜索框过滤掉的行不导出 */
+  var btnTbExport = document.getElementById('btnTbExport');
+  if (btnTbExport) {
+    btnTbExport.addEventListener('click', function () {
+      var rows = [];
+      Array.prototype.forEach.call(
+        tableBody.querySelectorAll('.table-row'),
+        function (r) {
+          if (r.style.display === 'none') { return; }   // 被筛掉的不导出
+          var url = (r.dataset.url || '').trim();
+          if (!url) { return; }
+          rows.push({
+            book: r.dataset.book || '',
+            source: r.dataset.source || '',
+            url: url,
+          });
+        }
+      );
+      if (rows.length === 0) {
+        window.appendLog('当前没有可导出的内容');
+        return;
+      }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.export_results(rows).then(function (res) {
+        if (res === 'empty') { window.appendLog('当前没有可导出的内容'); }
+      });
+    });
+  }
+
+  /* ==================== 清空历史记录（批 5-D） ==================== */
+  var btnTbClearSeen = document.getElementById('btnTbClearSeen');
+  if (btnTbClearSeen) {
+    btnTbClearSeen.addEventListener('click', function () {
+      /* confirm 在个别 WebView 后端可能不可用 → 抛错时按「确认」继续 */
+      var ok = true;
+      try {
+        ok = window.confirm('清空历史记录？清空后，以前搜过的 URL 会重新标记为【新盗文！】');
+      } catch (e) {
+        ok = true;
+      }
+      if (ok === false) { return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.clear_seen_urls();
+    });
+  }
+
   /* ==================== 行勾选 / 白名单 ==================== */
   function allRows() {
     return Array.prototype.slice.call(tableBody.children);
@@ -1709,17 +1752,6 @@
     });
     Promise.all(tasks).then(function () { window.reorderRows(); });
   };
-
-  /* ==================== 心跳（链路验证用） ==================== */
-  btnHbStart.addEventListener('click', function () {
-    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
-    window.pywebview.api.start_heartbeat();
-  });
-
-  btnHbStop.addEventListener('click', function () {
-    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
-    window.pywebview.api.stop_heartbeat();
-  });
 
   /* ==================== 验证码弹窗 ==================== */
   /* Python 调：window.showCaptchaDialog('搜狗风控（HTTP 403）…') */
