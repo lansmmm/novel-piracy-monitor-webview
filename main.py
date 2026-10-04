@@ -21,8 +21,9 @@ import webbrowser
 import webview
 from playwright.sync_api import sync_playwright
 
-from config import SOURCE_GROUPS
+from config import SOURCE_GROUPS, BLOCKED_DOMAINS, BLOCKED_URL_TOKENS, WHITELIST_COMMON_FILE
 from engines import ENGINE_MAP
+from utils import title_or_summary_matches, load_json, save_json
 
 import single_instance
 
@@ -36,6 +37,9 @@ INDEX_HTML = os.path.join(BASE_DIR, "index.html")
 
 # Edge 持久化用户目录（保留登录态 / cookies，跟 flet 版同名）
 USER_DATA_DIR = os.path.join(BASE_DIR, "baidu_engine_data")
+
+# 白名单词文件（每行一个词，命中即自动加白）
+WHITELIST_WORDS_FILE = os.path.join(BASE_DIR, "whitelist_words.json")
 
 APP_TITLE = "打盗全家捅"
 WINDOW_WIDTH = 1280
@@ -64,6 +68,72 @@ _deep_mode = {"v": False}
 # pause_for_user 里等用户的搜索线程）
 _current_adapter = {"v": None}
 
+# 会话内去重：同一来源的同一 URL 只显示一次（key = (来源中文名, url)）
+_displayed_urls = set()
+
+# 白名单（简化版）：common 白名单 URL 集合 + 懒加载标志 + 读写锁
+_whitelist_common = set()
+_wl_loaded = {"v": False}
+_wl_lock = threading.Lock()
+
+
+def _load_whitelist():
+    """懒加载 monitor_whitelist_common.json（只读一次）"""
+    global _whitelist_common
+    if _wl_loaded["v"]:
+        return
+    data = load_json(WHITELIST_COMMON_FILE, [])
+    if isinstance(data, list):
+        _whitelist_common = set(data)
+    _wl_loaded["v"] = True
+
+
+def _save_whitelist():
+    """把白名单落盘（排序后写，方便人工查看）"""
+    try:
+        save_json(WHITELIST_COMMON_FILE, sorted(_whitelist_common))
+    except Exception as e:                                        # noqa: BLE001
+        print(f"[whitelist] save failed: {e}", file=sys.stderr)
+
+
+# 白名单词：标题 / 摘要 / url 命中任一 → 自动加白
+_whitelist_words = set()
+_wlw_loaded = {"v": False}
+
+
+def _load_whitelist_words():
+    """懒加载 whitelist_words.json（只读一次）"""
+    global _whitelist_words
+    if _wlw_loaded["v"]:
+        return
+    data = load_json(WHITELIST_WORDS_FILE, [])
+    if isinstance(data, list):
+        _whitelist_words = set(data)
+    _wlw_loaded["v"] = True
+
+
+def _save_whitelist_words():
+    """把白名单词落盘"""
+    try:
+        save_json(WHITELIST_WORDS_FILE, sorted(_whitelist_words))
+    except Exception as e:                                        # noqa: BLE001
+        print(f"[whitelist_words] save failed: {e}", file=sys.stderr)
+
+
+def _match_whitelist_word(row):
+    """row 是 dict，含 title/summary/url。命中任一白名单词则返回该词，否则返回 ''"""
+    if not _whitelist_words:
+        return ""
+    hay = " ".join([
+        str(row.get("title", "")),
+        str(row.get("summary", "")),
+        str(row.get("url", "")),
+    ]).lower()
+    for w in _whitelist_words:
+        if w and str(w).lower() in hay:
+            return w
+    return ""
+
 # 前台模式撞验证码后最长等用户多久（秒）：超时就本轮跳过该引擎
 CAPTCHA_WAIT_SECONDS = 600
 
@@ -83,6 +153,20 @@ SOURCE_LABELS = {
     "sogou_weixin": "微信",
     "weibo": "微博",
 }
+
+
+def classify_source(label, r):
+    """按 URL 把结果归到更精确的来源（知道 / 贴吧 / 微信 / 文心），否则用原标签"""
+    url = (r.get("url") or "").lower()
+    if "zhidao.baidu.com" in url:
+        return "知道"
+    if "tieba.baidu.com" in url:
+        return "贴吧"
+    if "mp.weixin.qq.com" in url or "weixin.qq.com" in url or "weixin.sogou.com" in url:
+        return "微信"
+    if r.get("is_zhinengti"):
+        return "文心"
+    return label
 
 
 class WebViewAppAdapter:
@@ -193,6 +277,101 @@ class Api:
         flag = "true" if is_searching else "false"
         return self._push_js("window.setSearching(" + flag + ")")
 
+    # ==================== 清空去重记录（前端「清空列表」时调） ====================
+    def clear_displayed_urls(self):
+        """清空会话内去重集合：清空列表后，再搜同一个词，旧 URL 会重新出现"""
+        _displayed_urls.clear()
+        print("[dedupe] 已清空已显示 URL 集合")
+        return "ok"
+
+    # ==================== 白名单（基础版） ====================
+    def add_to_whitelist(self, urls):
+        """把一批 URL 加入白名单并落盘，返回新增条数"""
+        _load_whitelist()
+        urls = list(urls or [])
+        with _wl_lock:
+            added = 0
+            for u in urls:
+                u = str(u or "").strip()
+                if u and u not in _whitelist_common:
+                    _whitelist_common.add(u)
+                    added += 1
+            if added:
+                _save_whitelist()
+        self.push_log(f"已加入白名单 {added} 条（共 {len(_whitelist_common)} 条）")
+        print(f"[whitelist] add {added} → total {len(_whitelist_common)}")
+        return added
+
+    def remove_from_whitelist(self, urls):
+        """把一批 URL 移出白名单并落盘，返回移除条数"""
+        _load_whitelist()
+        urls = list(urls or [])
+        with _wl_lock:
+            removed = 0
+            for u in urls:
+                u = str(u or "").strip()
+                if u and u in _whitelist_common:
+                    _whitelist_common.discard(u)
+                    removed += 1
+            if removed:
+                _save_whitelist()
+        self.push_log(f"已取消白名单 {removed} 条")
+        return removed
+
+    def clear_whitelist(self):
+        """清空白名单并落盘，返回清空前的条数"""
+        _load_whitelist()
+        with _wl_lock:
+            n = len(_whitelist_common)
+            _whitelist_common.clear()
+            _save_whitelist()
+        self.push_log(f"已重置白名单（原 {n} 条）")
+        print(f"[whitelist] cleared {n} 条")
+        return n
+
+    def get_whitelist(self):
+        """返回白名单（排序后的 list）"""
+        _load_whitelist()
+        return sorted(_whitelist_common)
+
+    def check_whitelist(self, urls):
+        """返回每个 url 是否在白名单里（list of bool）"""
+        _load_whitelist()
+        return [str(u or "").strip() in _whitelist_common for u in (urls or [])]
+
+    # ==================== 白名单词 ====================
+    def get_whitelist_words(self):
+        """返回白名单词（排序后的 list）"""
+        _load_whitelist_words()
+        return sorted(_whitelist_words)
+
+    def save_whitelist_words(self, words):
+        """全量替换白名单词并落盘，返回保存后的条数"""
+        global _whitelist_words
+        _load_whitelist_words()
+        _whitelist_words = set(str(w).strip() for w in (words or []) if str(w).strip())
+        _wlw_loaded["v"] = True
+        _save_whitelist_words()
+        self.push_log(f"白名单词已保存：{len(_whitelist_words)} 条")
+        print(f"[whitelist_words] saved {len(_whitelist_words)} 条")
+        # 通知前端：重新应用白名单词到所有已抓行
+        try:
+            self._push_js("window.applyWhitelistWords()")
+        except Exception:                                         # noqa: BLE001
+            pass
+        return len(_whitelist_words)
+
+    def check_whitelist_word(self, text):
+        """给前端调用：判断一段文本（标题+摘要+url）是否命中白名单词，返回命中的词或 ''"""
+        _load_whitelist_words()
+        if not _whitelist_words:
+            return ""
+        hay = str(text or "").lower()
+        for w in _whitelist_words:
+            if w and str(w).lower() in hay:
+                return w
+        return ""
+
     # ==================== 停止搜索 ====================
     def stop_search(self):
         """点「停止」调这里：置事件位，由后台线程自己在循环里退出
@@ -290,6 +469,9 @@ class Api:
           - 深度模式 → 一个来源组里的 PC + 移动端引擎全都跑
         """
         self.set_searching(True)
+        _displayed_urls.clear()          # 每次搜索清空会话内去重集合
+        _load_whitelist()                # 确保白名单已加载，方便给行打 is_white
+        _load_whitelist_words()          # 确保白名单词已加载
         try:
             src_text = " / ".join(SOURCE_LABELS.get(s, s) for s in sources) or "（无）"
             self.push_log(f"已勾选来源：{src_text}")
@@ -406,17 +588,57 @@ class Api:
 
                             if not page_results:
                                 break
-                            self.push_log(
-                                f"【{label} 第 {page_num + 1} 页】命中 {len(page_results)} 条"
-                            )
+
+                            # 1) 屏蔽域名 / URL 特征过滤
+                            filtered = []
                             for r in page_results:
+                                u = (r.get("url") or "").lower()
+                                if any(d in u for d in BLOCKED_DOMAINS):
+                                    continue
+                                if any(tok in u for tok in BLOCKED_URL_TOKENS):
+                                    continue
+                                filtered.append(r)
+
+                            # 2) 书名匹配过滤（标题 / 摘要必须含书名的所有字）
+                            matched = []
+                            for r in filtered:
+                                title = r.get("title", "")
+                                summary = r.get("summary", "")
+                                if title_or_summary_matches(book, title, summary):
+                                    matched.append(r)
+
+                            self.push_log(
+                                f"【{label} 第 {page_num + 1} 页】命中 "
+                                f"{len(matched)} / 原始 {len(page_results)} 条"
+                            )
+
+                            # 3) 归类 + 推送（同一来源同一 URL 只显示一次）
+                            _wl_dirty = False
+                            for r in matched:
+                                src_label = classify_source(label, r)
+                                url = (r.get("url") or "").strip()
+
+                                # 命中白名单词 → 该 URL 自动加入白名单
+                                if _match_whitelist_word(r):
+                                    if url and url not in _whitelist_common:
+                                        _whitelist_common.add(url)
+                                        _wl_dirty = True
+
+                                key = (src_label, url)
+                                if url and key in _displayed_urls:
+                                    continue
+                                if url:
+                                    _displayed_urls.add(key)
                                 self.push_row({
-                                    "source": label,
+                                    "source": src_label,
                                     "title": r.get("title", ""),
                                     "date": r.get("date", "未知"),
                                     "summary": r.get("summary", ""),
                                     "url": r.get("url", ""),
+                                    "is_white": bool(url) and url in _whitelist_common,
                                 })
+                            if _wl_dirty:
+                                _save_whitelist()
                             all_results.extend(page_results)
                             page_num += 1
                             captcha_retry = 0

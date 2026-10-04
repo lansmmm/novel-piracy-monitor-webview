@@ -253,10 +253,12 @@
   }
 
   /* ==================== 表格 ==================== */
+  /* 表格区：吃掉卡B剩余高度、内部滚动，保证底部页签不被挤出屏幕 */
   .table-scroll {
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
-    overflow: auto;
+    overflow-y: auto;
+    overflow-x: auto;
   }
 
   .table-inner { min-width: 1190px; }
@@ -302,6 +304,7 @@
   .row-link:hover { text-decoration: underline; }
 
   /* 列宽（表头 / 数据行共用） */
+  .col-check  { flex: 0 0 32px;  width: 32px; display: flex; align-items: center; justify-content: center; }
   .col-src    { flex: 0 0 80px;  width: 80px; }
   .col-title  { flex: 0 0 320px; width: 320px; }
   .col-date   { flex: 0 0 110px; width: 110px; }
@@ -309,12 +312,20 @@
   .col-url    { flex: 0 0 260px; width: 260px; }
   .col-menu   { flex: 0 0 40px;  width: 40px; }
 
+  /* 行勾选框 */
+  .row-check { cursor: pointer; }
+
+  /* 已加白名单的行：文字整体灰化 */
+  .row-white .td,
+  .row-white .row-link { color: #9AA5B1; }
+
   /* ==================== 来源页签 ==================== */
   .tabs {
     display: flex;
     gap: 4px;
     align-items: center;
     overflow-x: auto;
+    flex-shrink: 0;             /* 固定在底部，不被表格内容压出屏幕 */
   }
 
   .tab {
@@ -430,6 +441,23 @@
     justify-content: flex-end;
     gap: 8px;
   }
+
+  /* 白名单词弹窗的多行输入框 */
+  .dialog-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 240px;
+    resize: vertical;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 16px;
+  }
 </style>
 </head>
 <body>
@@ -507,6 +535,7 @@
   <div class="table-scroll">
     <div class="table-inner">
       <div class="table-head">
+        <div class="th col-check"><input type="checkbox" id="checkAllRow" title="全选/取消"></div>
         <div class="th col-src">来源</div>
         <div class="th col-title">标题</div>
         <div class="th col-date">日期</div>
@@ -558,6 +587,19 @@
   </div>
 </div>
 
+<!-- ============ 白名单词弹窗 ============ -->
+<div id="wlWordsDialog" class="mask">
+  <div class="dialog">
+    <div class="dialog-title">白名单词</div>
+    <div class="dialog-text">每行一个词，命中即自动加入白名单</div>
+    <textarea id="wlWordsInput" class="dialog-textarea" rows="12" spellcheck="false"></textarea>
+    <div class="dialog-btns">
+      <button id="btnWlWordsCancel" class="btn btn-soft">取消</button>
+      <button id="btnWlWordsSave" class="btn btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ======================================================================
    批 1-1：搜索启动骨架
@@ -577,6 +619,11 @@
   var btnSearchStop = document.getElementById('btnStop');
   var btnHbStart = document.getElementById('btnHeartbeatStart');
   var btnHbStop = document.getElementById('btnHeartbeatStop');
+  var btnTbClear = document.getElementById('btnTbClear');
+  var btnTbWhite = document.getElementById('btnTbWhite');
+  var btnTbResetWhite = document.getElementById('btnTbResetWhite');
+  var btnTbSelectAll = document.getElementById('btnTbSelectAll');
+  var checkAllRow = document.getElementById('checkAllRow');
 
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
@@ -622,6 +669,24 @@
 
     var row = document.createElement('div');
     row.className = 'table-row';
+    row.dataset.url = (r.url === null || r.url === undefined) ? '' : String(r.url);
+    row.dataset.title = (r.title === null || r.title === undefined) ? '' : String(r.title);
+    row.dataset.summary = (r.summary === null || r.summary === undefined) ? '' : String(r.summary);
+
+    /* 已加白名单 → 整行文字灰化（记住是 common 白名单，白名单词清空时不被还原） */
+    if (r.is_white) {
+      row.classList.add('row-white');
+      row.dataset.whiteCommon = '1';
+    }
+
+    /* 行首勾选框 */
+    var checkCell = document.createElement('div');
+    checkCell.className = 'td col-check';
+    var check = document.createElement('input');
+    check.type = 'checkbox';
+    check.className = 'row-check';
+    checkCell.appendChild(check);
+    row.appendChild(checkCell);
 
     row.appendChild(makeCell('来源', 'td col-src', r.source));
     row.appendChild(makeCell('标题', 'td col-title', r.title));
@@ -639,7 +704,32 @@
     // 自动滚到底部（滚动条在外层 .table-scroll 上）
     if (tableScroll) { tableScroll.scrollTop = tableScroll.scrollHeight; }
 
+    // 白名单行沉底
+    window.reorderRows();
+
     return tableBody.children.length;
+  };
+
+  /* 白名单行沉底：非白名单行在前、白名单行（.row-white）在后；
+     顺序没变就不动 DOM，避免无谓重排 */
+  window.reorderRows = function () {
+    if (!tableBody) { return; }
+    var rows = Array.prototype.slice.call(tableBody.children);
+    if (rows.length < 2) { return; }
+
+    var normal = [], white = [];
+    rows.forEach(function (row) {
+      if (row.classList && row.classList.contains('row-white')) { white.push(row); }
+      else { normal.push(row); }
+    });
+
+    var desired = normal.concat(white);
+    var changed = desired.some(function (row, i) { return rows[i] !== row; });
+    if (!changed) { return; }
+
+    var frag = document.createDocumentFragment();
+    desired.forEach(function (row) { frag.appendChild(row); });
+    tableBody.appendChild(frag);
   };
 
   /* 普通单元格：整格 ellipsis 截断，鼠标悬停看全文 */
@@ -738,6 +828,167 @@
     // 用户会以为已经停了。
     if (apiReady()) { window.pywebview.api.stop_search(); }
   });
+
+  /* ==================== 清空列表 ==================== */
+  /* 前端清表格，同时通知后端清去重集合（否则再搜同一个词，旧 URL 不会重现） */
+  if (btnTbClear) {
+    btnTbClear.addEventListener('click', function () {
+      tableBody.innerHTML = '';
+      if (apiReady()) { window.pywebview.api.clear_displayed_urls(); }
+      window.appendLog('列表已清空');
+    });
+  }
+
+  /* ==================== 行勾选 / 白名单 ==================== */
+  function allRows() {
+    return Array.prototype.slice.call(tableBody.children);
+  }
+
+  function checkedRows() {
+    return allRows().filter(function (row) {
+      var c = row.querySelector('.row-check');
+      return c && c.checked;
+    });
+  }
+
+  function syncCheckAllState() {
+    if (!checkAllRow) { return; }
+    var rows = allRows();
+    var checked = checkedRows().length;
+    checkAllRow.checked = rows.length > 0 && checked === rows.length;
+    checkAllRow.indeterminate = checked > 0 && checked < rows.length;
+  }
+
+  function setAllRows(checked) {
+    allRows().forEach(function (row) {
+      var c = row.querySelector('.row-check');
+      if (c) { c.checked = checked; }
+    });
+    syncCheckAllState();
+  }
+
+  /* 表头全选框：勾了 → 所有行都勾，取消 → 所有行都取消 */
+  if (checkAllRow) {
+    checkAllRow.addEventListener('change', function () {
+      setAllRows(!!checkAllRow.checked);
+    });
+  }
+
+  /* 工具栏「全选/取消」按钮：切换全部 */
+  if (btnTbSelectAll) {
+    btnTbSelectAll.addEventListener('click', function () {
+      var rows = allRows();
+      var allChecked = rows.length > 0 && checkedRows().length === rows.length;
+      setAllRows(!allChecked);
+    });
+  }
+
+  /* 行内勾选变化时同步表头全选框状态 */
+  if (tableBody) {
+    tableBody.addEventListener('change', function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains('row-check')) {
+        syncCheckAllState();
+      }
+    });
+  }
+
+  /* 「加白名单」：把勾选行的 URL 加入白名单并落盘，然后给这些行灰化 */
+  if (btnTbWhite) {
+    btnTbWhite.addEventListener('click', function () {
+      var rows = checkedRows();
+      var urls = rows.map(function (row) { return (row.dataset.url || '').trim(); })
+                     .filter(function (u) { return !!u; });
+
+      if (!urls.length) { window.appendLog('[提示] 请先勾选要加白名单的行'); return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+
+      window.pywebview.api.add_to_whitelist(urls).then(function () {
+        rows.forEach(function (row) {
+          row.classList.add('row-white');
+          row.dataset.whiteCommon = '1';
+        });
+        window.reorderRows();
+      });
+    });
+  }
+
+  /* 「重置白名单」：确认后清空并落盘，移除所有灰化标记 */
+  if (btnTbResetWhite) {
+    btnTbResetWhite.addEventListener('click', function () {
+      if (!window.confirm('确定要清空全部白名单吗？')) { return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+
+      window.pywebview.api.clear_whitelist().then(function () {
+        allRows().forEach(function (row) {
+          row.classList.remove('row-white');
+          delete row.dataset.whiteCommon;
+          delete row.dataset.wlWord;
+        });
+        window.reorderRows();
+      });
+    });
+  }
+
+  /* ==================== 白名单词弹窗 ==================== */
+  var btnTbWhiteWords = document.getElementById('btnTbWhiteWords');
+  var wlWordsDialog = document.getElementById('wlWordsDialog');
+  var wlWordsInput = document.getElementById('wlWordsInput');
+  var btnWlWordsCancel = document.getElementById('btnWlWordsCancel');
+  var btnWlWordsSave = document.getElementById('btnWlWordsSave');
+
+  /* 打开弹窗：拉取现有白名单词，按行填进 textarea */
+  if (btnTbWhiteWords) {
+    btnTbWhiteWords.addEventListener('click', function () {
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.get_whitelist_words().then(function (words) {
+        wlWordsInput.value = (words || []).join('\n');
+        wlWordsDialog.classList.add('show');
+      });
+    });
+  }
+
+  if (btnWlWordsCancel) {
+    btnWlWordsCancel.addEventListener('click', function () {
+      wlWordsDialog.classList.remove('show');
+    });
+  }
+
+  /* 保存：按行拆分 → 全量替换 → Python 侧会自动调 applyWhitelistWords 刷新 */
+  if (btnWlWordsSave) {
+    btnWlWordsSave.addEventListener('click', function () {
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      var words = (wlWordsInput.value || '').split(/\r?\n/)
+        .map(function (s) { return s.trim(); })
+        .filter(function (s) { return !!s; });
+      window.pywebview.api.save_whitelist_words(words).then(function () {
+        wlWordsDialog.classList.remove('show');
+      });
+    });
+  }
+
+  /* 重新应用白名单词到所有已抓行（Python 保存后调用）：
+     命中 → 灰化并标记 wlWord；不再命中且只是词灰化的 → 还原 */
+  window.applyWhitelistWords = function () {
+    if (!apiReady()) { return; }
+    var tasks = [];
+    allRows().forEach(function (row) {
+      var text = (row.dataset.title || '') + ' ' +
+                 (row.dataset.summary || '') + ' ' +
+                 (row.dataset.url || '');
+      tasks.push(window.pywebview.api.check_whitelist_word(text).then(function (hit) {
+        if (hit) {
+          row.classList.add('row-white');
+          row.dataset.wlWord = '1';
+        } else if (row.dataset.wlWord === '1') {
+          delete row.dataset.wlWord;
+          if (row.dataset.whiteCommon !== '1') {
+            row.classList.remove('row-white');
+          }
+        }
+      }));
+    });
+    Promise.all(tasks).then(function () { window.reorderRows(); });
+  };
 
   /* ==================== 心跳（链路验证用） ==================== */
   btnHbStart.addEventListener('click', function () {
