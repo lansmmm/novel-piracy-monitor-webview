@@ -340,6 +340,12 @@
 
   .table-inner { min-width: 1190px; }
 
+  /* 框选蓝框（批 4-A-2） */
+  #dragBox { box-sizing: border-box; }
+
+  /* 框选中禁止选中文字，免得拖框时把文字刷蓝 */
+  body.dragging { user-select: none; }
+
   .table-head {
     display: flex;
     background: var(--input-bg);
@@ -361,6 +367,39 @@
   .table-row {
     display: flex;
     border-bottom: 1px solid var(--line);   /* 每行底部浅灰分隔线 */
+    cursor: default;                        /* 表格区默认箭头（批 4-A-3） */
+  }
+
+  /* 只有 URL 和 ⋯ 按钮是手型 */
+  .table-row a { cursor: pointer; }
+  .col-menu, .row-menu, .bm-arrow { cursor: pointer; }
+
+  /* 行选中（批 4-A-1）：整行浅绿底 */
+  .table-row.row-selected {
+    background: #E8F5F3;
+  }
+
+  .table-row.row-selected:hover {
+    background: #D6EDE8;   /* 深一点的绿，鼠标悬停更明显 */
+  }
+
+  /* 行右键 / ⋯ 菜单项（批 4-A-3） */
+  .row-menu-item {
+    padding: 6px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    color: #2F3542;
+    user-select: none;
+  }
+
+  .row-menu-item:hover { background: #F0F2F5; }
+
+  .row-menu-item.danger { color: #E63946; }
+
+  .row-menu-sep {
+    height: 1px;
+    background: #F0F2F5;
+    margin: 4px 0;
   }
 
   .td {
@@ -704,6 +743,55 @@
   var btnTbResetWhite = document.getElementById('btnTbResetWhite');
   var btnTbSelectAll = document.getElementById('btnTbSelectAll');
   var checkAllRow = document.getElementById('checkAllRow');
+  var tableSearchInput = document.getElementById('tableSearchInput');
+  var btnTbSearchClear = document.getElementById('btnTbSearchClear');
+
+  /* ==================== 行多选状态（批 4-A-1） ==================== */
+  var _lastAnchorRowIdx = null;   // 上次点击的行序号（Shift 区间用）
+
+  /* 当前所有结果行（按 DOM 顺序） */
+  function getAllRows() {
+    return Array.prototype.slice.call(
+      document.querySelectorAll('#tableBody .table-row')
+    );
+  }
+
+  /* 某行的序号（DOM 位置，从 0 开始） */
+  function getRowIdx(rowEl) {
+    return getAllRows().indexOf(rowEl);
+  }
+
+  /* ==================== 框选状态（批 4-A-2） ==================== */
+  var _drag = {
+    active: false,              // 移动超阈值后为 true（才算框选）
+    startX: 0,
+    startY: 0,
+    curX: 0,
+    curY: 0,
+    suppressNextClick: false,   // 框选结束后要吞掉随之而来的 click
+    autoScrollTimer: null,      // 触边自动滚的定时器
+    autoScrollDir: 0
+  };
+  var DRAG_THRESHOLD = 6;       // 移动超过 6px 才算框选
+
+  /* ==================== 行右键菜单状态（批 4-A-3） ==================== */
+  var _ctxTargetRow = null;     // 当前菜单作用的行元素
+
+  /* ==================== 筛选状态（批 4-A-4） ==================== */
+  var _currentTabFilter = '全部';   // 当前来源页签
+  var _searchBoxFilter = '';        // 工具栏搜索框关键词（小写）
+
+  /* 取"作用行集合"：有选中行 → 所有选中行；否则 → 当前行 */
+  function getActionRows() {
+    var all = getAllRows();
+    var selected = all.filter(function (r) {
+      var cb = r.querySelector('input[type=checkbox].row-check');
+      return cb && cb.checked;
+    });
+    if (selected.length > 0) { return selected; }
+    if (_ctxTargetRow && all.indexOf(_ctxTargetRow) >= 0) { return [_ctxTargetRow]; }
+    return [];
+  }
 
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
@@ -752,6 +840,13 @@
     row.dataset.url = (r.url === null || r.url === undefined) ? '' : String(r.url);
     row.dataset.title = (r.title === null || r.title === undefined) ? '' : String(r.title);
     row.dataset.summary = (r.summary === null || r.summary === undefined) ? '' : String(r.summary);
+    /* 日期倒序排序用（批 4-A-5）：原始日期文本，缺省「未知」 */
+    row.dataset.date = (r.date === null || r.date === undefined || r.date === '') ? '未知' : String(r.date);
+    /* 来源页签筛选用：来源中文名（批 4-A-4） */
+    row.dataset.source = (r.source === null || r.source === undefined) ? '' : String(r.source);
+    /* 右键菜单「打开源链接」用：原始关键词 + 引擎 id（批 4-A-3） */
+    row.dataset.keyword = (r.keyword === null || r.keyword === undefined) ? '' : String(r.keyword);
+    row.dataset.srcId = (r.srcId === null || r.srcId === undefined) ? '' : String(r.srcId);
 
     /* 已加白名单 → 整行文字灰化（记住是 common 白名单，白名单词清空时不被还原） */
     if (r.is_white) {
@@ -765,6 +860,14 @@
     var check = document.createElement('input');
     check.type = 'checkbox';
     check.className = 'row-check';
+    /* 勾选框点击 = Ctrl+点等价（只影响该行，不触发行点击） */
+    check.addEventListener('click', function (e) {
+      e.stopPropagation();                 // 不让行点击也触发
+      row.classList.toggle('row-selected', check.checked);
+      var i = getAllRows().indexOf(row);
+      if (i >= 0) { _lastAnchorRowIdx = i; }
+      syncCheckAllState();
+    });
     checkCell.appendChild(check);
     row.appendChild(checkCell);
 
@@ -777,7 +880,32 @@
     var menu = document.createElement('div');
     menu.className = 'td col-menu';
     menu.textContent = '⋯';
+    /* 点 ⋯ → 在按钮下方弹出同一张菜单（批 4-A-3） */
+    menu.addEventListener('click', function (e) {
+      e.stopPropagation();
+      _ctxTargetRow = row;
+      var rect = menu.getBoundingClientRect();
+      window.showRowMenu(rect.left, rect.bottom + 2);
+    });
     row.appendChild(menu);
+
+    /* 行点击选中：单击单选 / Ctrl 累加 / Shift 区间
+       点勾选框、URL、⋯ 菜单、浮层 → 不触发行选中 */
+    row.addEventListener('click', function (e) {
+      if (e.target.closest('input[type=checkbox]')) { return; }
+      if (e.target.closest('a')) { return; }
+      if (e.target.closest('.col-menu')) { return; }
+      if (e.target.closest('.row-menu')) { return; }
+      if (e.target.closest('.popup') || e.target.closest('#suffixPopup')) { return; }
+      handleRowClick(row, e);
+    });
+
+    /* 行上右键 → 同一张菜单（批 4-A-3） */
+    row.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      _ctxTargetRow = row;
+      window.showRowMenu(e.clientX, e.clientY);
+    });
 
     tableBody.appendChild(row);
 
@@ -787,30 +915,479 @@
     // 白名单行沉底
     window.reorderRows();
 
+    // 新行进来后按当前筛选条件应用一次（批 4-A-4）
+    if (typeof window.applyFilters === 'function') { window.applyFilters(); }
+
     return tableBody.children.length;
   };
 
-  /* 白名单行沉底：非白名单行在前、白名单行（.row-white）在后；
-     顺序没变就不动 DOM，避免无谓重排 */
-  window.reorderRows = function () {
-    if (!tableBody) { return; }
-    var rows = Array.prototype.slice.call(tableBody.children);
-    if (rows.length < 2) { return; }
+  /* 行点击核心：单击单选 / Ctrl 累加 toggle / Shift 区间全选 */
+  function handleRowClick(rowEl, e) {
+    if (_drag.suppressNextClick) {          // 刚做完框选，这次 click 吞掉
+      _drag.suppressNextClick = false;
+      return;
+    }
+    var all = getAllRows();
+    var idx = all.indexOf(rowEl);
+    if (idx < 0) { return; }
 
-    var normal = [], white = [];
-    rows.forEach(function (row) {
-      if (row.classList && row.classList.contains('row-white')) { white.push(row); }
-      else { normal.push(row); }
+    var isCtrl = e.ctrlKey || e.metaKey;
+    var isShift = e.shiftKey;
+
+    if (isShift && _lastAnchorRowIdx !== null) {
+      // Shift 区间：从 anchor 到 idx 全勾上（anchor 不动）
+      var lo = Math.min(_lastAnchorRowIdx, idx);
+      var hi = Math.max(_lastAnchorRowIdx, idx);
+      all.forEach(function (r, i) {
+        var cb = r.querySelector('input[type=checkbox].row-check');
+        var on = (i >= lo && i <= hi);
+        if (cb) { cb.checked = on; }
+        r.classList.toggle('row-selected', on);
+      });
+    } else if (isCtrl) {
+      // Ctrl 累加：toggle 当前行
+      var cb2 = rowEl.querySelector('input[type=checkbox].row-check');
+      if (cb2) { cb2.checked = !cb2.checked; }
+      rowEl.classList.toggle('row-selected', !!(cb2 && cb2.checked));
+      _lastAnchorRowIdx = idx;
+    } else {
+      // 单击单选：清空其他，只勾当前
+      all.forEach(function (r, i) {
+        var cb = r.querySelector('input[type=checkbox].row-check');
+        var on = (i === idx);
+        if (cb) { cb.checked = on; }
+        r.classList.toggle('row-selected', on);
+      });
+      _lastAnchorRowIdx = idx;
+    }
+
+    syncCheckAllState();
+  }
+
+  /* ======================================================================
+     框选（批 4-A-2）
+     - 在 .table-scroll 上按下左键 → 拖动超 6px 进入框选 → 画半透明蓝框
+     - 松手时框覆盖到的行全部选中（绿底 + 勾选框）
+     - 触到表格上/下边缘 → 自动滚动（用定时器，鼠标停在边缘不动也会继续滚）
+     - 框选结束吞掉随之而来的 click，避免又变成单选
+     ====================================================================== */
+  function dragBoxEl() { return document.getElementById('dragBox'); }
+
+  function stopAutoScroll() {
+    if (_drag.autoScrollTimer) {
+      clearInterval(_drag.autoScrollTimer);
+      _drag.autoScrollTimer = null;
+    }
+    _drag.autoScrollDir = 0;
+  }
+
+  function updateAutoScroll(clientY) {
+    if (!tableScroll) { return; }
+    var rect = tableScroll.getBoundingClientRect();
+    var EDGE = 30;
+    var dir = 0;
+    if (clientY < rect.top + EDGE) { dir = -1; }
+    else if (clientY > rect.bottom - EDGE) { dir = 1; }
+
+    if (dir === _drag.autoScrollDir) { return; }   // 方向没变，定时器保持原样
+
+    stopAutoScroll();
+    _drag.autoScrollDir = dir;
+    if (dir !== 0) {
+      _drag.autoScrollTimer = setInterval(function () {
+        if (!_drag.active) { stopAutoScroll(); return; }
+        tableScroll.scrollTop += dir * 8;
+      }, 16);
+    }
+  }
+
+  /* 框选期间吞掉 click（冒泡阶段之前的捕获阶段） */
+  function dragSwallowClick(ev) {
+    if (!_drag.suppressNextClick) { return; }
+    _drag.suppressNextClick = false;
+    ev.stopPropagation();
+    ev.preventDefault();
+    document.removeEventListener('click', dragSwallowClick, true);
+  }
+
+  function onDragMove(e) {
+    _drag.curX = e.clientX;
+    _drag.curY = e.clientY;
+
+    var dx = Math.abs(_drag.curX - _drag.startX);
+    var dy = Math.abs(_drag.curY - _drag.startY);
+    if (!_drag.active && dx < DRAG_THRESHOLD && dy < DRAG_THRESHOLD) { return; }
+
+    _drag.active = true;
+    document.body.classList.add('dragging');
+
+    var box = dragBoxEl();
+    if (box) {
+      box.style.display = 'block';
+      box.style.left = Math.min(_drag.startX, _drag.curX) + 'px';
+      box.style.top = Math.min(_drag.startY, _drag.curY) + 'px';
+      box.style.width = Math.abs(_drag.curX - _drag.startX) + 'px';
+      box.style.height = Math.abs(_drag.curY - _drag.startY) + 'px';
+    }
+
+    updateAutoScroll(e.clientY);
+  }
+
+  function onDragUp() {
+    document.removeEventListener('mousemove', onDragMove);
+    document.removeEventListener('mouseup', onDragUp);
+    stopAutoScroll();
+    document.body.classList.remove('dragging');
+
+    var box = dragBoxEl();
+    if (box) { box.style.display = 'none'; }
+
+    if (!_drag.active) {
+      // 没进框选模式 → 当普通点击处理，不干预
+      document.removeEventListener('click', dragSwallowClick, true);
+      return;
+    }
+
+    _drag.active = false;
+
+    // 框选结束：吞掉接下来这次 click（只吞一次）
+    _drag.suppressNextClick = true;
+    setTimeout(function () { _drag.suppressNextClick = false; }, 80);
+
+    // 计算框的矩形
+    var boxLeft = Math.min(_drag.startX, _drag.curX);
+    var boxRight = Math.max(_drag.startX, _drag.curX);
+    var boxTop = Math.min(_drag.startY, _drag.curY);
+    var boxBottom = Math.max(_drag.startY, _drag.curY);
+
+    var rows = getAllRows();
+    var selectedCount = 0;
+    var lastIdx = -1;
+
+    rows.forEach(function (r, i) {
+      var rect = r.getBoundingClientRect();
+      var yOverlap = !(rect.bottom < boxTop || rect.top > boxBottom);
+      var xOverlap = !(boxRight < rect.left || boxLeft > rect.right);
+      if (yOverlap && xOverlap) {
+        var cb = r.querySelector('input[type=checkbox].row-check');
+        if (cb) { cb.checked = true; }
+        r.classList.add('row-selected');
+        selectedCount++;
+        lastIdx = i;
+      }
     });
 
-    var desired = normal.concat(white);
-    var changed = desired.some(function (row, i) { return rows[i] !== row; });
+    // anchor 指向框选里的最后一行，方便之后 Shift 继续扩
+    if (selectedCount > 0 && lastIdx >= 0) { _lastAnchorRowIdx = lastIdx; }
+
+    syncCheckAllState();
+  }
+
+  /* 表格滚动区按下左键 → 准备框选 */
+  if (tableScroll) {
+    tableScroll.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) { return; }                              // 只处理左键
+      if (e.target.closest('input[type=checkbox]')) { return; }    // 勾选框
+      if (e.target.closest('a')) { return; }                       // URL 链接
+      if (e.target.closest('.col-menu')) { return; }               // ⋯ 菜单
+      if (e.target.closest('.row-menu')) { return; }
+      if (e.target.closest('.mask')) { return; }                   // 弹窗遮罩
+      if (e.target.closest('#suffixPopup')) { return; }            // 后缀浮层
+
+      _drag.active = false;
+      _drag.startX = e.clientX;
+      _drag.startY = e.clientY;
+      _drag.curX = e.clientX;
+      _drag.curY = e.clientY;
+
+      document.addEventListener('mousemove', onDragMove);
+      document.addEventListener('mouseup', onDragUp);
+      document.addEventListener('click', dragSwallowClick, true);
+    });
+  }
+
+  /* ======================================================================
+     行右键 / ⋯ 菜单（批 4-A-3）
+     - 动作作用于「所有选中行」；没有选中行时只作用于右键/⋯ 的那一行
+     ====================================================================== */
+  var ENGINE_URL = {
+    'baidu':          'https://www.baidu.com/s?wd=',
+    'baidu_mobile':   'https://m.baidu.com/s?word=',
+    'sogou_pc':       'https://www.sogou.com/web?query=',
+    'sogou_mobile':   'https://m.sogou.com/web/searchList.jsp?keyword=',
+    'so360_pc':       'https://www.so.com/s?q=',
+    'so360_mobile':   'https://m.so.com/s?q=',
+    'bing':           'https://www.bing.com/search?q=',
+    'toutiao_pc':     'https://so.toutiao.com/search?keyword=',
+    'toutiao_mobile': 'https://so.toutiao.com/search?keyword=',
+    'zhidao':         'https://zhidao.baidu.com/search?word=',
+    'zhidao_mobile':  'https://zhidao.baidu.com/search?word=',
+    'tieba':          'https://tieba.baidu.com/f/search/res?qw=',
+    'quark_cn':       'https://quark.sm.cn/s?q=',
+    'sogou_weixin':   'https://weixin.sogou.com/weixin?type=2&query=',
+    'weibo_mobile':   'https://s.weibo.com/weibo?q='
+  };
+
+  window.showRowMenu = function (x, y) {
+    var menu = document.getElementById('rowContextMenu');
+    if (!menu) { return; }
+    menu.innerHTML =
+      '<div class="row-menu-item" data-act="copy">复制链接</div>' +
+      '<div class="row-menu-item" data-act="open">打开链接</div>' +
+      '<div class="row-menu-item" data-act="open-src">打开源链接</div>' +
+      '<div class="row-menu-sep"></div>' +
+      '<div class="row-menu-item" data-act="white">加入白名单</div>' +
+      '<div class="row-menu-item danger" data-act="unwhite">取消白名单</div>';
+
+    /* 先亮出来量真实尺寸，若超出屏幕右/下边缘再往回收 */
+    menu.style.display = 'block';
+    menu.style.visibility = 'hidden';
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+
+    var menuW = menu.offsetWidth || 180;
+    var menuH = menu.offsetHeight || 220;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    if (x + menuW > vw) { x = vw - menuW - 4; }
+    if (y + menuH > vh) { y = vh - menuH - 4; }
+    if (x < 0) { x = 4; }
+    if (y < 0) { y = 4; }
+
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    menu.style.visibility = 'visible';
+
+    menu.onclick = function (ev) {
+      var item = ev.target.closest('.row-menu-item');
+      if (!item) { return; }
+      var act = item.dataset.act;
+      menu.style.display = 'none';
+      window.doRowAction(act);
+    };
+  };
+
+  /* 点别处 / Esc 关闭菜单 */
+  document.addEventListener('click', function (e) {
+    var menu = document.getElementById('rowContextMenu');
+    if (menu && menu.style.display === 'block' && !menu.contains(e.target)) {
+      menu.style.display = 'none';
+    }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      var menu = document.getElementById('rowContextMenu');
+      if (menu) { menu.style.display = 'none'; }
+    }
+  });
+
+  /* 取每行的数据（url / 关键词 / 引擎 id） */
+  function collectRowItems(rows) {
+    return rows.map(function (r) {
+      return {
+        url: (r.dataset.url || '').trim(),
+        keyword: (r.dataset.keyword || '').trim(),
+        srcId: (r.dataset.srcId || '').trim()
+      };
+    });
+  }
+
+  /* 「复制链接」：剪贴板写入，失败回退 textarea + execCommand */
+  function actCopyUrls(urls) {
+    if (urls.length === 0) { window.appendLog('[提示] 没有可复制的链接'); return; }
+    var text = urls.join('\n');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        window.appendLog('已复制 ' + urls.length + ' 个链接');
+      }, function () {
+        window.appendLog('[错误] 复制失败（剪贴板被拒绝）');
+      });
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (err) { /* 忽略 */ }
+      document.body.removeChild(ta);
+      window.appendLog('已复制 ' + urls.length + ' 个链接');
+    }
+  }
+
+  /* 菜单动作总入口：act ∈ copy / open / open-src / white / unwhite */
+  window.doRowAction = function (act) {
+    var rows = getActionRows();
+    if (rows.length === 0) { return; }
+    var items = collectRowItems(rows);
+    var urls = items.map(function (it) { return it.url; }).filter(Boolean);
+
+    if (act === 'copy') {
+      actCopyUrls(urls);
+
+    } else if (act === 'open') {
+      if (urls.length === 0) { window.appendLog('[提示] 没有可打开的链接'); return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      urls.forEach(function (u) { window.pywebview.api.open_url(u); });
+      window.appendLog('已打开 ' + urls.length + ' 个链接');
+
+    } else if (act === 'open-src') {
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      var cnt = 0;
+      items.forEach(function (it) {
+        if (!it.keyword) { return; }
+        var base = ENGINE_URL[it.srcId] || ENGINE_URL['baidu'];
+        window.pywebview.api.open_url(base + encodeURIComponent(it.keyword));
+        cnt++;
+      });
+      if (cnt === 0) { window.appendLog('[提示] 这些行没有关键词信息'); }
+      else { window.appendLog('已打开 ' + cnt + ' 个源链接'); }
+
+    } else if (act === 'white') {
+      if (urls.length === 0) { window.appendLog('[提示] 没有可加入白名单的链接'); return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.add_to_whitelist(urls).then(function () {
+        rows.forEach(function (r) {
+          r.classList.add('row-white');
+          r.dataset.whiteCommon = '1';
+          var cb = r.querySelector('input[type=checkbox].row-check');
+          if (cb) { cb.checked = false; }
+          r.classList.remove('row-selected');
+        });
+        window.reorderRows();
+        syncCheckAllState();
+        window.appendLog('已加入白名单 ' + urls.length + ' 个链接');
+      });
+
+    } else if (act === 'unwhite') {
+      if (urls.length === 0) { window.appendLog('[提示] 没有可取消白名单的链接'); return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.remove_from_whitelist(urls).then(function () {
+        rows.forEach(function (r) {
+          r.classList.remove('row-white');
+          delete r.dataset.whiteCommon;
+          delete r.dataset.wlWord;
+        });
+        window.reorderRows();
+        window.appendLog('已取消白名单 ' + urls.length + ' 个链接');
+      });
+    }
+  };
+
+  /* 日期 → 可比较的 YYYY-MM-DD 键（"未知"/解析不出 → '' 排最后） */
+  function parseDateKey(dateStr) {
+    var s = String(dateStr === null || dateStr === undefined ? '' : dateStr).trim();
+    if (!s || s === '未知') { return ''; }
+    s = s.replace(/年|月/g, '-').replace(/日/g, '');
+    s = s.replace(/\//g, '-').replace(/\./g, '-');
+    s = s.replace(/\s+/g, '');
+    var m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) {
+      return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+    }
+    return '';
+  }
+
+  /* 白名单行沉底 + 组内日期倒序（新→旧，"未知"排最后）
+     沉底优先级 > 日期排序：先按白名单分两组，再各自按日期倒序 */
+  window.reorderRows = function () {
+    var tbody = document.getElementById('tableBody');
+    if (!tbody) { return; }
+    var allRows = getAllRows();
+    if (allRows.length === 0) { return; }
+
+    var normalRows = [];
+    var whiteRows = [];
+    allRows.forEach(function (r) {
+      if (r.classList && r.classList.contains('row-white')) { whiteRows.push(r); }
+      else { normalRows.push(r); }
+    });
+
+    function sortByDateDesc(rows) {
+      rows.sort(function (a, b) {
+        var da = parseDateKey(a.dataset.date || '');
+        var db = parseDateKey(b.dataset.date || '');
+        if (!da && !db) { return 0; }
+        if (!da) { return 1; }      // a 无日期 → 排后面
+        if (!db) { return -1; }     // b 无日期 → 排后面
+        return db.localeCompare(da);   // 倒序
+      });
+    }
+    sortByDateDesc(normalRows);
+    sortByDateDesc(whiteRows);
+
+    var desired = normalRows.concat(whiteRows);
+    var current = Array.prototype.slice.call(tbody.children);
+    var changed = desired.length !== current.length ||
+      desired.some(function (row, i) { return current[i] !== row; });
     if (!changed) { return; }
 
-    var frag = document.createDocumentFragment();
-    desired.forEach(function (row) { frag.appendChild(row); });
-    tableBody.appendChild(frag);
+    tbody.innerHTML = '';
+    desired.forEach(function (r) { tbody.appendChild(r); });
+
+    _lastAnchorRowIdx = null;   // DOM 顺序变了 → 旧的 anchor 序号失效
   };
+
+  /* ======================================================================
+     筛选（批 4-A-4）：来源页签 + 工具栏搜索框，两者可叠加
+     - tabOK：当前页签是「全部」或该行来源与页签一致
+     - textOK：搜索框为空，或 标题/摘要/url 任一包含关键词
+     - 两个都满足才显示；最后 reorderRows 保证白名单行始终沉底
+     ====================================================================== */
+  window.applyFilters = function () {
+    var allRows = getAllRows();
+    allRows.forEach(function (r) {
+      var src = r.dataset.source || '';
+      var tabOK = (_currentTabFilter === '全部') || (src === _currentTabFilter);
+
+      var textOK = true;
+      if (_searchBoxFilter) {
+        var hay = (
+          (r.dataset.title || '') + ' ' +
+          (r.dataset.summary || '') + ' ' +
+          (r.dataset.url || '')
+        ).toLowerCase();
+        textOK = hay.indexOf(_searchBoxFilter) >= 0;
+      }
+
+      r.style.display = (tabOK && textOK) ? '' : 'none';
+    });
+
+    if (typeof window.reorderRows === 'function') { window.reorderRows(); }
+  };
+
+  /* 来源页签点击：切换 _currentTabFilter + 高亮 */
+  (function bindTabs() {
+    var tabsBox = document.getElementById('tabs');
+    if (!tabsBox) { return; }
+    var tabs = tabsBox.querySelectorAll('.tab');
+    Array.prototype.forEach.call(tabs, function (tab) {
+      tab.addEventListener('click', function () {
+        _currentTabFilter = (tab.textContent || '').trim();
+        Array.prototype.forEach.call(tabs, function (t) {
+          t.classList.toggle('active', t === tab);
+        });
+        window.applyFilters();
+      });
+    });
+  })();
+
+  /* 工具栏搜索框：实时过滤 + 「清空」恢复全显 */
+  if (tableSearchInput) {
+    tableSearchInput.addEventListener('input', function () {
+      _searchBoxFilter = (tableSearchInput.value || '').trim().toLowerCase();
+      window.applyFilters();
+    });
+  }
+
+  if (btnTbSearchClear) {
+    btnTbSearchClear.addEventListener('click', function () {
+      if (tableSearchInput) { tableSearchInput.value = ''; }
+      _searchBoxFilter = '';
+      window.applyFilters();
+    });
+  }
 
   /* 普通单元格：整格 ellipsis 截断，鼠标悬停看全文 */
   function makeCell(label, cls, value) {
@@ -975,6 +1552,7 @@
   if (btnTbClear) {
     btnTbClear.addEventListener('click', function () {
       tableBody.innerHTML = '';
+      _lastAnchorRowIdx = null;               // 列表清空 → 重置 Shift 锚点
       if (apiReady()) { window.pywebview.api.clear_displayed_urls(); }
       window.appendLog('列表已清空');
     });
@@ -1004,6 +1582,7 @@
     allRows().forEach(function (row) {
       var c = row.querySelector('.row-check');
       if (c) { c.checked = checked; }
+      row.classList.toggle('row-selected', !!checked);   // 行绿底跟勾选同步
     });
     syncCheckAllState();
   }
@@ -1453,6 +2032,18 @@
   window.setSearching(false);
 })();
 </script>
+
+<!-- ============ 框选用的半透明蓝框（批 4-A-2） ============ -->
+<div id="dragBox" style="position:fixed; display:none;
+     background: rgba(42,157,143,0.15);
+     border: 1px solid #2A9D8F;
+     pointer-events: none; z-index: 9998;"></div>
+
+<!-- ============ 行右键 / ⋯ 菜单（批 4-A-3，内容由 window.showRowMenu 渲染） ============ -->
+<div id="rowContextMenu" style="position:fixed; display:none; background:#fff;
+     border:1px solid #E8EBEE; border-radius:6px;
+     box-shadow:0 4px 16px rgba(0,0,0,0.12);
+     padding:4px 0; z-index: 9999; min-width: 160px;"></div>
 
 </body>
 
