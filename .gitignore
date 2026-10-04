@@ -23,3 +23,4 @@ whitelist_words.json
 # 临时文件
 _ev*.txt
 _hb*.txt
+_t_*

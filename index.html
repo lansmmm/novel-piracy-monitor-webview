@@ -293,6 +293,14 @@
     text-overflow: ellipsis;
   }
 
+  /* 表格里的 url 列：蓝色可点链接 */
+  .row-link {
+    color: #1A73E8;
+    text-decoration: none;
+  }
+
+  .row-link:hover { text-decoration: underline; }
+
   /* 列宽（表头 / 数据行共用） */
   .col-src    { flex: 0 0 80px;  width: 80px; }
   .col-title  { flex: 0 0 320px; width: 320px; }
@@ -379,6 +387,49 @@
 
   .btn-xs-green { background: var(--primary); color: #FFFFFF; }
   .btn-xs-gray  { background: var(--disabled-bg); color: #455A64; }
+
+  /* ==================== 验证码弹窗 ==================== */
+  /* 前台模式撞验证码时由 Python 调 window.showCaptchaDialog(reason) 唤起 */
+  .mask {
+    position: fixed;
+    inset: 0;                     /* 铺满整个窗口 */
+    background: rgba(0, 0, 0, 0.45);
+    display: none;                /* 默认藏起来，.show 时才显示 */
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+  }
+
+  .mask.show { display: flex; }
+
+  .dialog {
+    width: 420px;
+    background: #FFFFFF;
+    border-radius: 8px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+    padding: 18px 20px 16px;
+  }
+
+  .dialog-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 8px;
+  }
+
+  .dialog-text {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text-dim);
+    word-break: break-all;
+    margin-bottom: 16px;
+  }
+
+  .dialog-btns {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
 </style>
 </head>
 <body>
@@ -492,15 +543,20 @@
     <button id="btnHeartbeatStart" class="btn-xs btn-xs-green">开始心跳</button>
     <button id="btnHeartbeatStop" class="btn-xs btn-xs-gray">停止心跳</button>
   </div>
-  <div class="log-body" id="logBody">
-    <div class="log-line">[09:40:58] 启动完成，等待搜索…</div>
-    <div class="log-line">[09:41:02] 已勾选来源：夸克 / 百度 / 搜狗</div>
-    <div class="log-line">[09:41:03] 正在打开浏览器（夸克）…</div>
-    <div class="log-line">[09:41:07] 夸克 第 1 页：抓到 12 条候选</div>
-    <div class="log-line">[09:41:09] 百度 命中验证码，已暂停</div>
-    <div class="log-line alert">[09:41:09] [暂停] 需要人工过验证，请在浏览器里点一下，然后按「我已过验证，继续」</div>
-  </div>
+  <div class="log-body" id="logBody"></div>
 </section>
+
+<!-- ============ 验证码遮罩弹窗（前台模式撞验证码时由 Python 唤起） ============ -->
+<div id="captchaDialog" class="mask">
+  <div class="dialog">
+    <div class="dialog-title">需要过验证码</div>
+    <div id="captchaText" class="dialog-text"></div>
+    <div class="dialog-btns">
+      <button id="btnCaptchaStop" class="btn btn-soft">停止本轮</button>
+      <button id="btnCaptchaOk" class="btn btn-primary">我已过验证，继续</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /* ======================================================================
@@ -513,6 +569,8 @@
   'use strict';
 
   var logBody = document.getElementById('logBody');
+  var tableBody = document.getElementById('tableBody');
+  var tableScroll = document.querySelector('.table-scroll');
   var bookInput = document.getElementById('bookInput');
   var pagesInput = document.getElementById('pagesInput');
   var btnSearch = document.getElementById('btnSearch');
@@ -547,6 +605,79 @@
     logBody.scrollTop = logBody.scrollHeight;   // 自动滚到最新一行
     return logBody.children.length;
   };
+
+  /* ======================================================================
+     Python 调用的入口：往结果表格追加一行
+     Python 侧：window.evaluate_js('window.appendRow({...})')
+     这里收到的是一段 JSON 字符串，自己 parse
+     列宽跟表头一致：来源 80 / 标题 320 / 日期 110 / 摘要 380 / url 260 / 菜单 40
+     ====================================================================== */
+  window.appendRow = function (jsonStr) {
+    var r = {};
+    try {
+      r = JSON.parse(jsonStr) || {};
+    } catch (e) {
+      r = { source: '', title: String(jsonStr), date: '未知', summary: '', url: '' };
+    }
+
+    var row = document.createElement('div');
+    row.className = 'table-row';
+
+    row.appendChild(makeCell('来源', 'td col-src', r.source));
+    row.appendChild(makeCell('标题', 'td col-title', r.title));
+    row.appendChild(makeCell('日期', 'td col-date', r.date));
+    row.appendChild(makeCell('摘要', 'td col-abs', r.summary));
+    row.appendChild(makeUrlCell(r.url));
+
+    var menu = document.createElement('div');
+    menu.className = 'td col-menu';
+    menu.textContent = '⋯';
+    row.appendChild(menu);
+
+    tableBody.appendChild(row);
+
+    // 自动滚到底部（滚动条在外层 .table-scroll 上）
+    if (tableScroll) { tableScroll.scrollTop = tableScroll.scrollHeight; }
+
+    return tableBody.children.length;
+  };
+
+  /* 普通单元格：整格 ellipsis 截断，鼠标悬停看全文 */
+  function makeCell(label, cls, value) {
+    var cell = document.createElement('div');
+    cell.className = cls;
+    var text = (value === null || value === undefined) ? '' : String(value);
+    cell.textContent = text;
+    cell.title = text;                       // 悬停显示完整内容
+    cell.setAttribute('data-label', label);
+    return cell;
+  }
+
+  /* url 单元格：蓝色可点链接（空白 / 非 http 就按纯文本显示）
+     ★ 点击走 Python 的 webbrowser.open，不让 WebView 内部跳转：
+       href 用 javascript:void(0)（不真实导航），真正的打开动作在 click 监听里。
+       用 addEventListener 而不是内联 onclick，是因为 url 里可能带单引号，
+       拼字符串会直接把属性拼坏。 */
+  function makeUrlCell(url) {
+    var cell = document.createElement('div');
+    cell.className = 'td col-url';
+    var text = (url === null || url === undefined) ? '' : String(url);
+    cell.title = text;
+
+    if (/^https?:\/\//i.test(text)) {
+      var a = document.createElement('a');
+      a.className = 'row-link';
+      a.href = 'javascript:void(0)';
+      a.textContent = text;
+      a.addEventListener('click', function () {
+        if (apiReady()) { window.pywebview.api.open_url(text); }
+      });
+      cell.appendChild(a);
+    } else {
+      cell.textContent = text;
+    }
+    return cell;
+  }
 
   function apiReady() {
     return !!(window.pywebview && window.pywebview.api);
@@ -601,8 +732,11 @@
   });
 
   btnSearchStop.addEventListener('click', function () {
-    window.appendLog('收到停止指令（模拟）');
-    window.setSearching(false);      // 本批：只恢复按钮状态
+    window.appendLog('收到停止指令');
+    // 不在这里 setSearching(false)：等后台线程真的退出后，由 Python 的
+    // finally 统一调 setSearching(false)，否则按钮先恢复但线程还在跑，
+    // 用户会以为已经停了。
+    if (apiReady()) { window.pywebview.api.stop_search(); }
   });
 
   /* ==================== 心跳（链路验证用） ==================== */
@@ -614,6 +748,60 @@
   btnHbStop.addEventListener('click', function () {
     if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
     window.pywebview.api.stop_heartbeat();
+  });
+
+  /* ==================== 验证码弹窗 ==================== */
+  /* Python 调：window.showCaptchaDialog('搜狗风控（HTTP 403）…') */
+  var captchaDialog = document.getElementById('captchaDialog');
+  var captchaText = document.getElementById('captchaText');
+  var btnCaptchaOk = document.getElementById('btnCaptchaOk');
+  var btnCaptchaStop = document.getElementById('btnCaptchaStop');
+  var btnCaptchaContinueTop = document.getElementById('btnCaptchaContinue');
+
+  function hideCaptchaDialog() {
+    captchaDialog.classList.remove('show');
+  }
+
+  window.showCaptchaDialog = function (reason) {
+    var text = (reason === null || reason === undefined) ? '' : String(reason);
+    captchaText.textContent = text;
+    captchaDialog.classList.add('show');
+    try { window.focus(); } catch (e) { /* 某些环境下会抛，忽略 */ }
+    return true;
+  };
+
+  /* 「我已过验证，继续」：通知 Python 唤醒暂停中的线程，并收起弹窗 */
+  function onCaptchaContinue() {
+    if (apiReady()) { window.pywebview.api.captcha_continue(); }
+    hideCaptchaDialog();
+  }
+
+  /* 「停止本轮」：跟顶栏「停止」同一个动作（顺带把卡在等验证的线程唤醒） */
+  function onCaptchaStop() {
+    window.appendLog('收到停止指令');
+    if (apiReady()) { window.pywebview.api.stop_search(); }
+    hideCaptchaDialog();
+  }
+
+  btnCaptchaOk.addEventListener('click', onCaptchaContinue);
+  btnCaptchaStop.addEventListener('click', onCaptchaStop);
+  /* 顶栏那条「我已过验证，继续」= 弹窗里的继续按钮 */
+  btnCaptchaContinueTop.addEventListener('click', onCaptchaContinue);
+
+  /* ==================== 前台 / 深度 两个开关 ==================== */
+  var switchFrontend = document.getElementById('switchFrontend');
+  var switchDeep = document.getElementById('switchDeep');
+
+  switchFrontend.addEventListener('change', function () {
+    var on = !!switchFrontend.checked;
+    window.appendLog('前台模式：' + (on ? '开（显示浏览器 + 验证码弹窗）' : '关（后台无头，不弹窗）'));
+    if (apiReady()) { window.pywebview.api.set_frontend_mode(on); }
+  });
+
+  switchDeep.addEventListener('change', function () {
+    var on = !!switchDeep.checked;
+    window.appendLog('深度模式：' + (on ? '开（PC + 移动端一起搜）' : '关（每个来源只搜主渠道）'));
+    if (apiReady()) { window.pywebview.api.set_deep_mode(on); }
   });
 
   /* 初始状态：搜索按钮可用、停止按钮禁用 */
