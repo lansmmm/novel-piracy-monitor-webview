@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 import webbrowser
 
 import webview
@@ -40,6 +41,17 @@ USER_DATA_DIR = os.path.join(BASE_DIR, "baidu_engine_data")
 
 # 白名单词文件（每行一个词，命中即自动加白）
 WHITELIST_WORDS_FILE = os.path.join(BASE_DIR, "whitelist_words.json")
+
+# 书签文件：[{id, name, suffixes: [{text, enabled}]}]
+BOOKMARKS_FILE = os.path.join(BASE_DIR, "bookmarks.json")
+
+# 新建书签时的默认后缀（全部启用）
+DEFAULT_SUFFIXES = [
+    {"text": "", "enabled": True},
+    {"text": "链接", "enabled": True},
+    {"text": "网盘", "enabled": True},
+    {"text": "免费", "enabled": True},
+]
 
 APP_TITLE = "打盗全家捅"
 WINDOW_WIDTH = 1280
@@ -133,6 +145,70 @@ def _match_whitelist_word(row):
         if w and str(w).lower() in hay:
             return w
     return ""
+
+# ==================== 书签 ====================
+_bookmarks = []                     # [{id, name, suffixes: [{text, enabled}]}]
+_bm_loaded = {"v": False}
+_bm_lock = threading.Lock()
+
+
+def _load_bookmarks():
+    """懒加载 bookmarks.json，兼容旧格式（字符串数组）"""
+    global _bookmarks
+    if _bm_loaded["v"]:
+        return
+    try:
+        with open(BOOKMARKS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:                                             # noqa: BLE001
+        data = []
+    if not isinstance(data, list):
+        data = []
+
+    migrated = []
+    for item in data:
+        if isinstance(item, str):
+            migrated.append({
+                "id": uuid.uuid4().hex[:8],
+                "name": item,
+                "suffixes": [dict(s) for s in DEFAULT_SUFFIXES],
+            })
+        elif isinstance(item, dict):
+            if not item.get("id"):
+                item["id"] = uuid.uuid4().hex[:8]
+            if "suffixes" not in item or not isinstance(item["suffixes"], list):
+                item["suffixes"] = [dict(s) for s in DEFAULT_SUFFIXES]
+            else:
+                for s in item["suffixes"]:                        # 补 enabled 默认值
+                    s.setdefault("enabled", True)
+            migrated.append(item)
+
+    _bookmarks = migrated
+    _bm_loaded["v"] = True
+
+
+def _save_bookmarks():
+    try:
+        with open(BOOKMARKS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_bookmarks, f, ensure_ascii=False, indent=2)
+    except Exception as e:                                        # noqa: BLE001
+        print(f"[bookmarks] save failed: {e}", file=sys.stderr)
+
+
+def _bookmarks_for_ui():
+    """转成前端友好格式（去掉内部字段，只留 id/name/suffixCount/suffixes）"""
+    return [
+        {
+            "id": bm.get("id", ""),
+            "name": bm.get("name", ""),
+            "suffixCount": sum(
+                1 for s in bm.get("suffixes", []) if s.get("enabled", True)
+            ),
+            "suffixes": [dict(s) for s in bm.get("suffixes", [])],
+        }
+        for bm in _bookmarks
+    ]
+
 
 # 前台模式撞验证码后最长等用户多久（秒）：超时就本轮跳过该引擎
 CAPTCHA_WAIT_SECONDS = 600
@@ -372,6 +448,73 @@ class Api:
                 return w
         return ""
 
+    # ==================== 书签 ====================
+    def get_bookmarks(self):
+        """返回全部书签（前端友好格式）"""
+        _load_bookmarks()
+        return _bookmarks_for_ui()
+
+    def add_bookmark(self, name):
+        """新建书签（允许重名）"""
+        _load_bookmarks()
+        name = (name or "").strip()
+        if not name:
+            return {"ok": False, "error": "书名为空"}
+        with _bm_lock:
+            _bookmarks.append({
+                "id": uuid.uuid4().hex[:8],
+                "name": name,
+                "suffixes": [dict(s) for s in DEFAULT_SUFFIXES],
+            })
+            _save_bookmarks()
+        self.push_log(f"已保存书签：{name}")
+        self._push_bookmarks_changed()
+        return {"ok": True}
+
+    def delete_bookmark(self, bm_id):
+        """按 id 删除书签"""
+        _load_bookmarks()
+        with _bm_lock:
+            for i, bm in enumerate(_bookmarks):
+                if bm.get("id") == bm_id:
+                    name = bm.get("name", "")
+                    del _bookmarks[i]
+                    _save_bookmarks()
+                    self.push_log(f"已删除书签：{name}")
+                    self._push_bookmarks_changed()
+                    return {"ok": True}
+        return {"ok": False, "error": "找不到书签"}
+
+    def update_bookmark_suffixes(self, bm_id, suffixes):
+        """全量覆盖某书签的 suffixes"""
+        _load_bookmarks()
+        if not isinstance(suffixes, list):
+            return {"ok": False, "error": "suffixes 不是数组"}
+
+        clean = []
+        for s in suffixes:
+            if isinstance(s, dict):
+                clean.append({
+                    "text": str(s.get("text", "")),
+                    "enabled": bool(s.get("enabled", True)),
+                })
+
+        with _bm_lock:
+            for bm in _bookmarks:
+                if bm.get("id") == bm_id:
+                    bm["suffixes"] = clean
+                    _save_bookmarks()
+                    self._push_bookmarks_changed()
+                    return {"ok": True}
+        return {"ok": False, "error": "找不到书签"}
+
+    def _push_bookmarks_changed(self):
+        """通知前端重新渲染书签区（参数是 JSON 字符串，故需二次 dumps）"""
+        payload = json.dumps(_bookmarks_for_ui(), ensure_ascii=False)
+        return self._push_js(
+            "window.renderBookmarks(" + json.dumps(payload) + ")"
+        )
+
     # ==================== 停止搜索 ====================
     def stop_search(self):
         """点「停止」调这里：置事件位，由后台线程自己在循环里退出
@@ -429,22 +572,36 @@ class Api:
         return "ok"
 
     # ==================== 搜索（真跑 Playwright + 多引擎 + 多页） ====================
-    def start_search(self, book, sources, pages):
-        """点「搜索」调这里
+    def start_search(self, tasks, sources, pages):
+        """点「搜索」调这里（批 3-C 起支持批量）
 
-        book    = 书名(str)
+        tasks   = [{"book": 书签名(str), "keyword": 真正搜索词(str)}, ...]
+                  book 用作日志分组 / book_kw；keyword 才是拿去搜的词
         sources = 勾选的来源 list（引擎组 id，如 ['baidu', 'sogou']）
         pages   = 页数(int) 或 "auto"
         """
-        book = str(book or "").strip()
-        sources = list(sources or [])
-
-        if not book:
-            self.push_log("[提示] 请先输入书名")
+        if not isinstance(tasks, list) or not tasks:
+            self.push_log("[提示] 没有可执行的搜索任务")
             return "invalid"
-        if not sources:
+        if not isinstance(sources, list) or not sources:
             self.push_log("[提示] 请至少勾选一个来源")
             return "invalid"
+
+        # 清洗 tasks：keyword 必填，book 缺省用 keyword
+        clean = []
+        for t in tasks:
+            if not isinstance(t, dict):
+                continue
+            kw = str(t.get("keyword", "") or "").strip()
+            if not kw:
+                continue
+            bk = str(t.get("book", "") or "").strip() or kw
+            clean.append({"book": bk, "keyword": kw})
+        if not clean:
+            self.push_log("[提示] 没有可执行的搜索任务")
+            return "invalid"
+
+        sources = list(sources)
 
         if self._search_thread is not None and self._search_thread.is_alive():
             print("[search] 上一次搜索还在跑，忽略本次请求")
@@ -453,15 +610,18 @@ class Api:
         _stop_event.clear()                                       # 搜索开始前清零
         self._search_thread = threading.Thread(
             target=self._search_loop_real,
-            args=(book, sources, pages),
+            args=(clean, sources, pages),
             name="search",
             daemon=True,
         )
         self._search_thread.start()
-        print(f"[search] 已启动：book={book!r} sources={sources} pages={pages!r}")
+        print(
+            f"[search] 已启动：{len(clean)} 个搜索词 {[t['keyword'] for t in clean]!r} "
+            f"sources={sources} pages={pages!r}"
+        )
         return "started"
 
-    def _search_loop_real(self, book, sources, pages):
+    def _search_loop_real(self, tasks, sources, pages):
         """真抓取：开 Edge → 逐个来源跑引擎 → 每个引擎翻 N 页 → 日志 / 表格逐行推
 
         前台/深度两个开关在这里生效：
@@ -498,7 +658,7 @@ class Api:
                     locale="zh-CN",
                     timezone_id="Asia/Shanghai",
                 )
-                adapter = WebViewAppAdapter(book, self)
+                adapter = WebViewAppAdapter(tasks[0]["book"], self)
                 _current_adapter["v"] = adapter
                 _skip_engines = set()   # 后台模式撞验证后，该引擎本轮全跳过
 
@@ -512,10 +672,26 @@ class Api:
                     else:
                         engine_tasks.append((versions[0], src_id))
 
-                total = len(engine_tasks)
-                for i, (engine_id, src_id) in enumerate(engine_tasks, 1):
+                # 展开「任务 × 引擎」→ 扁平作业列表
+                # 每个 task = {"book": 书签名, "keyword": 真正搜索词}
+                total_tasks = len(tasks)
+                jobs = []               # (ti, keyword, book, engine_id, src_id, 是否该任务首引擎)
+                for ti, task in enumerate(tasks, 1):
+                    kw = task["keyword"]
+                    bk = task["book"]
+                    for ei, (et_engine_id, et_src_id) in enumerate(engine_tasks):
+                        jobs.append((ti, kw, bk, et_engine_id, et_src_id, ei == 0))
+
+                if total_tasks > 1:
+                    self.push_log(f"共 {total_tasks} 个搜索词，合计 {len(jobs)} 个作业")
+
+                total = len(jobs)
+                for i, (ti, keyword, book, engine_id, src_id, first_of_task) in enumerate(jobs, 1):
                     if _stop_event.is_set():
                         break
+
+                    if first_of_task and total_tasks > 1:
+                        self.push_log(f"=== 第 {ti}/{total_tasks} 个搜索：{keyword} ===")
 
                     label = SOURCE_LABELS.get(src_id, src_id)
 
@@ -552,7 +728,7 @@ class Api:
                                 break
                             try:
                                 page_results = engine.fetch(
-                                    context, book, page_num=page_num, book_kw=book
+                                    context, keyword, page_num=page_num, book_kw=book
                                 )
                             except Exception as e:                # noqa: BLE001
                                 self.push_log(f"{label} 第 {page_num + 1} 页出错：{e}")
@@ -635,6 +811,8 @@ class Api:
                                     "date": r.get("date", "未知"),
                                     "summary": r.get("summary", ""),
                                     "url": r.get("url", ""),
+                                    "keyword": keyword,
+                                    "srcId": engine_id,
                                     "is_white": bool(url) and url in _whitelist_common,
                                 })
                             if _wl_dirty:

@@ -234,6 +234,83 @@
   .chip .chip-arrow { font-size: 9px;  margin-left: 4px;
                       padding: 2px 4px; border-radius: 4px; }
 
+  /* 书签胶囊（批 3-A：可选中） */
+  .bm-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 12px;
+    border-radius: 14px;
+    background: #ECEFF1;      /* 未选中：灰 */
+    color: #7A869A;
+    cursor: pointer;
+    font-size: 13px;
+    user-select: none;
+    margin: 4px 8px 4px 0;    /* 换行间距 */
+  }
+
+  .bm-chip.selected {
+    background: #E8F5F3;      /* 选中：浅绿 */
+    color: #2A9D8F;
+  }
+
+  .bm-chip .bm-count { font-size: 12px; }
+
+  .bm-chip .bm-arrow { font-size: 9px; margin-left: 2px; }
+
+  /* 书签右键菜单 */
+  .bm-menu-item {
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  .bm-menu-item:hover {
+    background: #F0F2F5;
+  }
+
+  /* ==================== 后缀浮层（批 3-B） ==================== */
+  .sf-popup-title { font-size: 12px; color: #7A869A; margin-bottom: 8px; }
+
+  .sf-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    font-size: 13px;
+  }
+
+  .sf-item label { flex: 1; cursor: pointer; user-select: none; }
+
+  .sf-item .sf-del {
+    color: #E63946;
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 14px;
+  }
+
+  .sf-item .sf-del:hover { background: #FFEEEE; border-radius: 4px; }
+
+  .sf-add-row { display: flex; gap: 6px; margin-top: 8px; }
+
+  .sf-add-row input {
+    flex: 1;
+    padding: 4px 8px;
+    border: 1px solid #E8EBEE;
+    border-radius: 4px;
+    font-size: 13px;
+  }
+
+  .sf-add-row button {
+    padding: 4px 12px;
+    background: #2A9D8F;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+
   /* ==================== 来源勾选框 ==================== */
   .check {
     display: inline-flex;
@@ -503,11 +580,8 @@
 
   <div class="hdiv"></div>
 
-  <!-- 【3】书签区 -->
-  <div id="bookmarkRow" class="chips">
-    <span class="chip"><span class="chip-name">斗破苍穹</span><span class="chip-count">5</span><span class="chip-arrow">▼</span></span>
-    <span class="chip"><span class="chip-name">纯白恶魔</span><span class="chip-count">1</span><span class="chip-arrow">▼</span></span>
-  </div>
+  <!-- 【3】书签区（内容由 window.renderBookmarks 渲染） -->
+  <div id="bookmarkRow" class="chips"></div>
 </section>
 
 <!-- ============ 卡B：工具栏 + 结果表格 + 来源页签 ============ -->
@@ -599,6 +673,12 @@
     </div>
   </div>
 </div>
+
+<!-- ============ 后缀浮层（批 3-B，内容由 window.openSuffixPopup 渲染） ============ -->
+<div id="suffixPopup" style="display:none; position:fixed; background:#fff;
+     border:1px solid #E8EBEE; border-radius:8px;
+     box-shadow:0 4px 16px rgba(0,0,0,0.12); padding:10px; z-index:9999;
+     min-width:240px;"></div>
 
 <script>
 /* ======================================================================
@@ -805,20 +885,81 @@
   }
 
   /* ==================== 搜索 / 停止 ==================== */
-  btnSearch.addEventListener('click', function () {
-    var book = (bookInput.value || '').trim();
-    var sources = getCheckedSources();
-    var pages = getPagesArg();
+  /* 单个搜索（双击书签用，绕开选中逻辑，不动输入框） */
+  window.searchOneBook = function (name) {
+    var book = (name === null || name === undefined) ? '' : String(name).trim();
+    if (!book) { window.appendLog('[提示] 书名为空'); return; }
 
-    if (!book) { window.appendLog('[提示] 请先输入书名'); return; }
+    var sources = getCheckedSources();
     if (!sources.length) { window.appendLog('[提示] 请至少勾选一个来源'); return; }
     if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
 
-    window.pywebview.api.start_search(book, sources, pages).then(function (res) {
-      if (res === 'already_running') {
-        window.appendLog('[提示] 上一次搜索还在跑，请稍候');
-      }
-    });
+    var pages = getPagesArg();
+    window.pywebview.api.start_search([{ book: book, keyword: book }], sources, pages)
+      .then(function (res) {
+        if (res === 'already_running') {
+          window.appendLog('[提示] 上一次搜索还在跑，请稍候');
+        } else if (res === 'invalid') {
+          window.appendLog('[提示] 搜索参数不合法');
+        }
+      });
+  };
+
+  /* 统一起点（「搜索」按钮）：有选中书签 → 批量搜书签；没选中 → 搜输入框 */
+  window.doSearch = function () {
+    var selectedIds = (window._selectedBookmarkIds instanceof Set)
+      ? window._selectedBookmarkIds : new Set();
+
+    var sources = getCheckedSources();
+    if (!sources.length) { window.appendLog('[提示] 请至少勾选一个来源'); return; }
+    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+
+    var pages = getPagesArg();
+
+    function run(tasks) {
+      window.pywebview.api.start_search(tasks, sources, pages).then(function (res) {
+        if (res === 'already_running') {
+          window.appendLog('[提示] 上一次搜索还在跑，请稍候');
+        } else if (res === 'invalid') {
+          window.appendLog('[提示] 搜索参数不合法');
+        }
+      });
+    }
+
+    if (selectedIds.size > 0) {
+      // 有选中书签 → 拉书签数据 → 按启用后缀展开 tasks
+      window.pywebview.api.get_bookmarks().then(function (books) {
+        var tasks = [];
+        (books || []).forEach(function (b) {
+          if (!selectedIds.has(b.id)) { return; }
+          var enabled = (b.suffixes || []).filter(function (s) {
+            return s.enabled !== false;
+          });
+          if (enabled.length === 0) {
+            tasks.push({ book: b.name, keyword: b.name });
+          } else {
+            enabled.forEach(function (s) {
+              tasks.push({ book: b.name, keyword: b.name + (s.text || '') });
+            });
+          }
+        });
+        if (!tasks.length) {
+          window.appendLog('[提示] 选中的书签没有可用的搜索词');
+          return;
+        }
+        run(tasks);
+      });
+    } else {
+      // 没选中 → 用输入框
+      var name = (bookInput.value || '').trim();
+      if (!name) { window.appendLog('[提示] 请先输入书名，或选中书签'); return; }
+      run([{ book: name, keyword: name }]);
+    }
+  };
+
+  /* 「搜索」按钮：有选中批量搜书签，没选中搜输入框 */
+  btnSearch.addEventListener('click', function () {
+    window.doSearch();
   });
 
   btnSearchStop.addEventListener('click', function () {
@@ -1054,6 +1195,259 @@
     window.appendLog('深度模式：' + (on ? '开（PC + 移动端一起搜）' : '关（每个来源只搜主渠道）'));
     if (apiReady()) { window.pywebview.api.set_deep_mode(on); }
   });
+
+  /* ==================== 书签（批 3-A） ==================== */
+  var bookmarkRow = document.getElementById('bookmarkRow');
+  var btnBookmark = document.getElementById('btnBookmark');
+
+  /* 选中集合：存书签 id（用 Set，所以允许重名书签各自独立选中） */
+  function bmSelectedIds() {
+    if (!(window._selectedBookmarkIds instanceof Set)) {
+      window._selectedBookmarkIds = new Set();
+    }
+    return window._selectedBookmarkIds;
+  }
+
+  function loadBookmarks() {
+    if (!apiReady()) { return; }
+    window.pywebview.api.get_bookmarks().then(function (books) {
+      window.renderBookmarks(JSON.stringify(books || []));
+    });
+  }
+
+  /* Python 调：window.renderBookmarks('<json 字符串>') */
+  window.renderBookmarks = function (booksJsonStr) {
+    var books;
+    try { books = JSON.parse(booksJsonStr || '[]'); }
+    catch (e) { books = []; }
+    if (!bookmarkRow) { return; }
+
+    var selectedIds = bmSelectedIds();
+    bookmarkRow.innerHTML = '';
+
+    books.forEach(function (b) {
+      var chip = document.createElement('div');
+      chip.className = 'bm-chip' + (selectedIds.has(b.id) ? ' selected' : '');
+      chip.dataset.bmId = b.id;
+      chip.dataset.bmName = b.name;
+
+      var nameEl = document.createElement('span');
+      nameEl.textContent = b.name;
+
+      var countEl = document.createElement('span');
+      countEl.className = 'bm-count';
+      countEl.textContent = b.suffixCount;
+
+      var arrowEl = document.createElement('span');
+      arrowEl.className = 'bm-arrow';
+      arrowEl.textContent = '▼';
+      arrowEl.dataset.action = 'expand';
+      // 点箭头：打开后缀浮层（下批 3-B）
+      arrowEl.addEventListener('click', function (e) {
+        e.stopPropagation();
+        window.openSuffixPopup(b.id, chip);
+      });
+
+      chip.appendChild(nameEl);
+      chip.appendChild(document.createTextNode(' '));
+      chip.appendChild(countEl);
+      chip.appendChild(arrowEl);
+
+      // 单击 / 双击冲突处理：双击时取消单击的选中切换
+      var clickTimer = null;
+
+      // 左键单击：仅切换选中
+      chip.addEventListener('click', function () {
+        if (clickTimer) {
+          clearTimeout(clickTimer);
+          clickTimer = null;
+          return;
+        }
+        clickTimer = setTimeout(function () {
+          clickTimer = null;
+          if (selectedIds.has(b.id)) { selectedIds.delete(b.id); }
+          else { selectedIds.add(b.id); }
+          window._selectedBookmarkIds = selectedIds;
+          chip.classList.toggle('selected');
+        }, 220);
+      });
+
+      // 双击：直接搜这本书（不走选中逻辑、不动输入框）
+      chip.addEventListener('dblclick', function (e) {
+        e.stopPropagation();
+        if (clickTimer) {
+          clearTimeout(clickTimer);
+          clickTimer = null;
+        }
+        window.searchOneBook(b.name);
+      });
+
+      // 右键：菜单
+      chip.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        window.showBookmarkMenu(e.clientX, e.clientY, b.id, b.name);
+      });
+
+      bookmarkRow.appendChild(chip);
+    });
+  };
+
+  /* 书签右键菜单 */
+  window.showBookmarkMenu = function (x, y, bmId, bmName) {
+    var menu = document.getElementById('bmContextMenu');
+    if (!menu) {
+      menu = document.createElement('div');
+      menu.id = 'bmContextMenu';
+      menu.style.cssText = 'position:fixed;background:#fff;border:1px solid #E8EBEE;' +
+        'border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.1);padding:4px 0;' +
+        'z-index:9999;display:none;min-width:140px;';
+      menu.innerHTML =
+        '<div class="bm-menu-item" data-action="fill">填入输入框</div>' +
+        '<div class="bm-menu-item" data-action="delete" style="color:#E63946;">删除书签</div>';
+      document.body.appendChild(menu);
+    }
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    menu.style.display = 'block';
+    menu.dataset.bmId = bmId;
+    menu.dataset.bmName = bmName;
+
+    menu.onclick = function (ev) {
+      var item = ev.target.closest('.bm-menu-item');
+      if (!item) { return; }
+      var action = item.dataset.action;
+      if (action === 'fill') {
+        bookInput.value = bmName;
+      } else if (action === 'delete') {
+        if (window.confirm('确定删除书签「' + bmName + '」？')) {
+          if (apiReady()) { window.pywebview.api.delete_bookmark(bmId); }
+        }
+      }
+      menu.style.display = 'none';
+    };
+  };
+
+  /* 点别处关闭菜单 */
+  document.addEventListener('click', function (e) {
+    var menu = document.getElementById('bmContextMenu');
+    if (menu && !menu.contains(e.target)) { menu.style.display = 'none'; }
+  });
+
+  /* ==================== 后缀浮层（批 3-B） ==================== */
+  window.openSuffixPopup = function (bmId, chipEl) {
+    var popup = document.getElementById('suffixPopup');
+    if (!popup) { return; }
+    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+    window.pywebview.api.get_bookmarks().then(function (books) {
+      var bm = (books || []).find(function (b) { return b.id === bmId; });
+      if (!bm) { return; }
+      renderSuffixPopup(bm);
+      // 定位：胶囊下方
+      var rect = chipEl.getBoundingClientRect();
+      popup.style.left = rect.left + 'px';
+      popup.style.top = (rect.bottom + 4) + 'px';
+      popup.style.display = 'block';
+    });
+  };
+
+  function renderSuffixPopup(bm) {
+    var popup = document.getElementById('suffixPopup');
+    var html = '<div class="sf-popup-title">「' + bm.name +
+               '」的搜索词（勾选=参与搜索）</div>';
+
+    bm.suffixes.forEach(function (s, idx) {
+      var display = s.text || '无后缀';
+      var checked = s.enabled ? 'checked' : '';
+      var delBtn = s.text
+        ? '<span class="sf-del" data-idx="' + idx + '">✕</span>' : '';
+      html += '<div class="sf-item">' +
+                '<input type="checkbox" class="sf-cb" data-idx="' + idx + '" ' +
+                  checked + '>' +
+                '<label>' + display + '</label>' +
+                delBtn +
+              '</div>';
+    });
+
+    html += '<div class="sf-add-row">' +
+              '<input type="text" id="sfNewInput" placeholder="新后缀，回车添加">' +
+              '<button id="sfAddBtn">+</button>' +
+            '</div>';
+
+    popup.innerHTML = html;
+    popup.dataset.bmId = bm.id;
+
+    // 勾选切换
+    popup.querySelectorAll('.sf-cb').forEach(function (cb) {
+      cb.addEventListener('change', function () {
+        var idx = parseInt(cb.dataset.idx, 10);
+        bm.suffixes[idx].enabled = cb.checked;
+        saveSuffixes(bm, false);
+      });
+    });
+
+    // 删除
+    popup.querySelectorAll('.sf-del').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var idx = parseInt(el.dataset.idx, 10);
+        bm.suffixes.splice(idx, 1);
+        saveSuffixes(bm, true);       // true = 重新渲染浮层
+      });
+    });
+
+    // 新增
+    function doAdd() {
+      var inp = document.getElementById('sfNewInput');
+      var txt = (inp.value || '').trim();
+      if (!txt) { return; }
+      var exists = bm.suffixes.some(function (s) { return s.text === txt; });
+      if (exists) { inp.value = ''; return; }     // 去重
+      bm.suffixes.push({ text: txt, enabled: true });
+      saveSuffixes(bm, true);
+    }
+
+    document.getElementById('sfAddBtn').addEventListener('click', doAdd);
+    document.getElementById('sfNewInput').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doAdd(); }
+    });
+  }
+
+  function saveSuffixes(bm, rerender) {
+    window.pywebview.api.update_bookmark_suffixes(bm.id, bm.suffixes)
+      .then(function () {
+        if (rerender) { renderSuffixPopup(bm); }
+      });
+  }
+
+  /* 点别处关闭浮层（点在 ▼ 箭头上时交给 openSuffixPopup 处理） */
+  document.addEventListener('click', function (e) {
+    var popup = document.getElementById('suffixPopup');
+    if (!popup || popup.style.display !== 'block') { return; }
+    if (popup.contains(e.target)) { return; }
+    if (e.target.classList && e.target.classList.contains('bm-arrow')) { return; }
+    popup.style.display = 'none';
+  });
+
+  /* Esc 关闭浮层 */
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      var popup = document.getElementById('suffixPopup');
+      if (popup) { popup.style.display = 'none'; }
+    }
+  });
+
+  /* 「保存为书签」：取输入框书名 → 后端新建（允许重名） */
+  if (btnBookmark) {
+    btnBookmark.addEventListener('click', function () {
+      var name = (bookInput.value || '').trim();
+      if (!name) { window.appendLog('[提示] 请先输入书名'); return; }
+      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      window.pywebview.api.add_bookmark(name);
+    });
+  }
+
+  /* 启动时拉一次书签列表 */
+  if (apiReady()) { loadBookmarks(); }
+  window.addEventListener('pywebviewready', loadBookmarks);
 
   /* 初始状态：搜索按钮可用、停止按钮禁用 */
   window.setSearching(false);
