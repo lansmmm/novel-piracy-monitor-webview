@@ -10,6 +10,7 @@
     set PM_DEBUG=1 && python main.py
 """
 
+import datetime
 import json
 import os
 import shutil
@@ -25,7 +26,7 @@ from playwright.sync_api import sync_playwright
 
 from config import SOURCE_GROUPS, BLOCKED_DOMAINS, BLOCKED_URL_TOKENS, WHITELIST_COMMON_FILE
 from engines import ENGINE_MAP
-from utils import title_or_summary_matches, load_json, save_json
+from utils import title_or_summary_matches, save_json
 
 import single_instance
 
@@ -72,8 +73,6 @@ STATS_TXT_FILE = os.path.join(BASE_DIR, "搜索统计.txt")
 # 历史记录（批 5-D）：只存 URL 数组，不区分来源；不在集合里 = 新链接
 SEEN_URLS_FILE = os.path.join(BASE_DIR, "seen_urls.json")
 
-SEARCH_LOG_INTERVAL = 0.5  # 模拟搜索日志每行之间的间隔（秒）
-
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0"
@@ -98,7 +97,7 @@ _displayed_urls = set()
 # ==================== 历史记录 / 新链接（批 5-D + 批 6） ====================
 # 单文件去重库：seen_urls.json 是对象 {"url": {"book": 书名, "source": 来源}}
 _seen_urls = {}
-_seen_urls_loaded = {"v": False}
+_seen_urls_loaded = False
 _seen_urls_lock = threading.Lock()
 
 
@@ -109,8 +108,8 @@ def _load_seen_urls():
       - 老格式：["url1", "url2"]  → 自动迁移成对象格式并立刻落盘
       - 新格式：{"url": {"book": …, "source": …}}
     """
-    global _seen_urls
-    if _seen_urls_loaded["v"]:
+    global _seen_urls, _seen_urls_loaded
+    if _seen_urls_loaded:
         return
     try:
         with open(SEEN_URLS_FILE, "r", encoding="utf-8") as f:
@@ -125,7 +124,7 @@ def _load_seen_urls():
             if u:
                 migrated[str(u)] = {"book": "", "source": ""}
         _seen_urls = migrated
-        _seen_urls_loaded["v"] = True
+        _seen_urls_loaded = True
         _save_seen_urls()        # 立刻落盘新格式
         return
 
@@ -145,7 +144,7 @@ def _load_seen_urls():
         _seen_urls = cleaned
     else:
         _seen_urls = {}
-    _seen_urls_loaded["v"] = True
+    _seen_urls_loaded = True
 
 
 def _save_seen_urls():
@@ -203,8 +202,7 @@ def _load_stats():
 def _save_stats():
     """写回 搜索统计.json，并生成人看的 搜索统计.txt"""
     try:
-        import datetime as _dt
-        _stats["last_updated"] = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _stats["last_updated"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(STATS_FILE, "w", encoding="utf-8") as f:
             json.dump(_stats, f, ensure_ascii=False, indent=2)
         # 生成人看的 txt
@@ -228,20 +226,22 @@ def _save_stats():
         print(f"[stats] save failed: {e}")
 
 
-def _stats_add_search():
-    """本轮搜索 +1"""
+def _stats_incr(key, n=1):
+    """某个累计计数 +n（默认 +1）"""
     with _stats_lock:
         _load_stats()
-        _stats["total_searches"] += 1
+        _stats[key] = _stats.get(key, 0) + n
         _save_stats()
+
+
+def _stats_add_search():
+    """本轮搜索 +1"""
+    _stats_incr("total_searches", 1)
 
 
 def _stats_add_captcha():
     """这轮撞了一次验证码"""
-    with _stats_lock:
-        _load_stats()
-        _stats["total_captchas"] += 1
-        _save_stats()
+    _stats_incr("total_captchas", 1)
 
 
 def _stats_add_source_hits(label, n):
@@ -254,19 +254,43 @@ def _stats_add_source_hits(label, n):
 
 # 白名单（简化版）：common 白名单 URL 集合 + 懒加载标志 + 读写锁
 _whitelist_common = set()
-_wl_loaded = {"v": False}
+_wl_loaded = False
 _wl_lock = threading.Lock()
 
 
-def _load_whitelist():
-    """懒加载 monitor_whitelist_common.json（只读一次）"""
-    global _whitelist_common
-    if _wl_loaded["v"]:
-        return
-    data = load_json(WHITELIST_COMMON_FILE, [])
-    if isinstance(data, list):
-        _whitelist_common = set(data)
-    _wl_loaded["v"] = True
+# 白名单词：标题 / 摘要 / url 命中任一 → 自动加白
+_whitelist_words = set()
+_wlw_loaded = False
+
+
+def _make_list_loader(file_path, target_set, flag_name):
+    """生成一个「懒加载 json 数组 → 就地填进 target_set」的加载函数
+
+    ★ 必须就地更新（clear+update）而不是重新赋值：
+      WebViewAppAdapter.whitelist_common 持有的是 _whitelist_common 的对象引用，
+      若重新赋值，adapter 会一直指向旧的空 set。
+    ★ flag_name 是模块级布尔标志名（懒加载标志），赋值走 global。
+    """
+    def loader():
+        if globals()[flag_name]:
+            return
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                target_set.clear()
+                target_set.update(str(x) for x in data if x)
+        except Exception:                                         # noqa: BLE001
+            pass
+        globals()[flag_name] = True
+    loader.__doc__ = f"懒加载 {file_path}（只读一次）"
+    return loader
+
+
+_load_whitelist = _make_list_loader(
+    WHITELIST_COMMON_FILE, _whitelist_common, "_wl_loaded")
+_load_whitelist_words = _make_list_loader(
+    WHITELIST_WORDS_FILE, _whitelist_words, "_wlw_loaded")
 
 
 def _save_whitelist():
@@ -275,22 +299,6 @@ def _save_whitelist():
         save_json(WHITELIST_COMMON_FILE, sorted(_whitelist_common))
     except Exception as e:                                        # noqa: BLE001
         print(f"[whitelist] save failed: {e}", file=sys.stderr)
-
-
-# 白名单词：标题 / 摘要 / url 命中任一 → 自动加白
-_whitelist_words = set()
-_wlw_loaded = {"v": False}
-
-
-def _load_whitelist_words():
-    """懒加载 whitelist_words.json（只读一次）"""
-    global _whitelist_words
-    if _wlw_loaded["v"]:
-        return
-    data = load_json(WHITELIST_WORDS_FILE, [])
-    if isinstance(data, list):
-        _whitelist_words = set(data)
-    _wlw_loaded["v"] = True
 
 
 def _save_whitelist_words():
@@ -317,14 +325,14 @@ def _match_whitelist_word(row):
 
 # ==================== 书签 ====================
 _bookmarks = []                     # [{id, name, suffixes: [{text, enabled}]}]
-_bm_loaded = {"v": False}
+_bm_loaded = False
 _bm_lock = threading.Lock()
 
 
 def _load_bookmarks():
     """懒加载 bookmarks.json，兼容旧格式（字符串数组）"""
-    global _bookmarks
-    if _bm_loaded["v"]:
+    global _bookmarks, _bm_loaded
+    if _bm_loaded:
         return
     try:
         with open(BOOKMARKS_FILE, "r", encoding="utf-8") as f:
@@ -353,7 +361,7 @@ def _load_bookmarks():
             migrated.append(item)
 
     _bookmarks = migrated
-    _bm_loaded["v"] = True
+    _bm_loaded = True
 
 
 def _save_bookmarks():
@@ -429,7 +437,9 @@ class WebViewAppAdapter:
         self.book_name = book_name
         self.api = api
         self._last_fetch_raw_count = 0
-        self.whitelist_common = set()
+        # ★ 与全局 _whitelist_common 同一份对象（_load_whitelist 改为就地更新后成立），
+        #   引擎侧 `raw_url in self.app.whitelist_common` 才能真正判到已加白的链接
+        self.whitelist_common = _whitelist_common
         # 验证码相关：引擎调 pause_for_user 时置 captcha_hit，
         # 搜索线程看到它就知道「这次 fetch 是撞验证码了，结果不可信」
         self.captcha_hit = False
@@ -483,11 +493,6 @@ class Api:
     def bind(self, window):
         """create_window 之后调用，拿到窗口句柄才能 evaluate_js"""
         self._window = window
-
-    # ==================== 基础自检 ====================
-    def ping(self):
-        print("[api] ping() 被调用 → 返回 pong")
-        return "pong"
 
     # ==================== Python → JS 推送 ====================
     def _push_js(self, code):
@@ -573,38 +578,37 @@ class Api:
             return "error"
 
     # ==================== 白名单（基础版） ====================
+    def _bulk_update_whitelist(self, urls, op):
+        """批量加白 / 移出白名单的公共骨架；op = 'add' or 'remove'"""
+        _load_whitelist()
+        n = 0
+        with _wl_lock:
+            for u in (urls or []):
+                u = str(u or "").strip()
+                if not u:
+                    continue
+                if op == "add" and u not in _whitelist_common:
+                    _whitelist_common.add(u)
+                    n += 1
+                elif op == "remove" and u in _whitelist_common:
+                    _whitelist_common.discard(u)
+                    n += 1
+            if n:
+                _save_whitelist()
+        if op == "add":
+            self.push_log(f"已加入白名单 {n} 条（共 {len(_whitelist_common)} 条）")
+            print(f"[whitelist] add {n} → total {len(_whitelist_common)}")
+        else:
+            self.push_log(f"已取消白名单 {n} 条")
+        return n
+
     def add_to_whitelist(self, urls):
         """把一批 URL 加入白名单并落盘，返回新增条数"""
-        _load_whitelist()
-        urls = list(urls or [])
-        with _wl_lock:
-            added = 0
-            for u in urls:
-                u = str(u or "").strip()
-                if u and u not in _whitelist_common:
-                    _whitelist_common.add(u)
-                    added += 1
-            if added:
-                _save_whitelist()
-        self.push_log(f"已加入白名单 {added} 条（共 {len(_whitelist_common)} 条）")
-        print(f"[whitelist] add {added} → total {len(_whitelist_common)}")
-        return added
+        return self._bulk_update_whitelist(urls, "add")
 
     def remove_from_whitelist(self, urls):
         """把一批 URL 移出白名单并落盘，返回移除条数"""
-        _load_whitelist()
-        urls = list(urls or [])
-        with _wl_lock:
-            removed = 0
-            for u in urls:
-                u = str(u or "").strip()
-                if u and u in _whitelist_common:
-                    _whitelist_common.discard(u)
-                    removed += 1
-            if removed:
-                _save_whitelist()
-        self.push_log(f"已取消白名单 {removed} 条")
-        return removed
+        return self._bulk_update_whitelist(urls, "remove")
 
     def clear_whitelist(self):
         """清空白名单并落盘，返回清空前的条数"""
@@ -617,16 +621,6 @@ class Api:
         print(f"[whitelist] cleared {n} 条")
         return n
 
-    def get_whitelist(self):
-        """返回白名单（排序后的 list）"""
-        _load_whitelist()
-        return sorted(_whitelist_common)
-
-    def check_whitelist(self, urls):
-        """返回每个 url 是否在白名单里（list of bool）"""
-        _load_whitelist()
-        return [str(u or "").strip() in _whitelist_common for u in (urls or [])]
-
     # ==================== 白名单词 ====================
     def get_whitelist_words(self):
         """返回白名单词（排序后的 list）"""
@@ -635,10 +629,12 @@ class Api:
 
     def save_whitelist_words(self, words):
         """全量替换白名单词并落盘，返回保存后的条数"""
-        global _whitelist_words
+        global _wlw_loaded
         _load_whitelist_words()
-        _whitelist_words = set(str(w).strip() for w in (words or []) if str(w).strip())
-        _wlw_loaded["v"] = True
+        # 就地替换（不重新赋值）：保持与懒加载闭包持有的同一份 set 对象
+        _whitelist_words.clear()
+        _whitelist_words.update(str(w).strip() for w in (words or []) if str(w).strip())
+        _wlw_loaded = True
         _save_whitelist_words()
         self.push_log(f"白名单词已保存：{len(_whitelist_words)} 条")
         print(f"[whitelist_words] saved {len(_whitelist_words)} 条")
@@ -756,31 +752,24 @@ class Api:
         return "ok"
 
     # ==================== 前台 / 深度 两个开关 ====================
+    def _set_mode(self, mode_dict, on, label, on_text, off_text):
+        """两个开关的公共骨架：写标志 + 推一条日志"""
+        mode_dict["v"] = bool(on)
+        self.push_log(f"{label}：" + (on_text if mode_dict["v"] else off_text))
+        print(f"[mode] {label} = {mode_dict['v']}")
+        return "ok"
+
     def set_frontend_mode(self, on):
         """前台模式：True = 显示 Edge 窗口 + 撞验证码弹窗等用户处理"""
-        _frontend_mode["v"] = bool(on)
-        self.push_log("前台模式：" + ("开（显示浏览器 + 验证码弹窗）" if _frontend_mode["v"] else "关（后台无头，不弹窗）"))
-        print(f"[mode] 前台模式 = {_frontend_mode['v']}")
-        return "ok"
+        return self._set_mode(_frontend_mode, on, "前台模式",
+                              "开（显示浏览器 + 验证码弹窗）",
+                              "关（后台无头，不弹窗）")
 
     def set_deep_mode(self, on):
         """深度模式：True = 一个来源组里的 PC + 移动端引擎全都跑"""
-        _deep_mode["v"] = bool(on)
-        self.push_log("深度模式：" + ("开（PC + 移动端一起搜）" if _deep_mode["v"] else "关（每个来源只搜主渠道）"))
-        print(f"[mode] 深度模式 = {_deep_mode['v']}")
-        return "ok"
-
-    # ==================== 搜索统计（批 5-B，给以后界面用） ====================
-    def get_stats(self):
-        """返回累计统计 dict（总轮数 / 总验证码次数 / 各来源累计命中）"""
-        with _stats_lock:
-            _load_stats()
-            return {
-                "total_searches": _stats["total_searches"],
-                "total_captchas": _stats["total_captchas"],
-                "by_source": dict(_stats["by_source"]),
-                "last_updated": _stats["last_updated"],
-            }
+        return self._set_mode(_deep_mode, on, "深度模式",
+                              "开（PC + 移动端一起搜）",
+                              "关（每个来源只搜主渠道）")
 
     # ==================== 导出结果（批 5-C） ====================
     def export_results(self, rows):
@@ -789,7 +778,6 @@ class Api:
         rows: list of dict，每项含 {book: str, source: str, url: str}
         按 (书名, 来源) 分组，组内只列 URL，组间空一行
         """
-        import datetime as _dt
         if not isinstance(rows, list) or not rows:
             self.push_log("当前没有可导出的内容")
             return "empty"
@@ -829,7 +817,7 @@ class Api:
             desktop = os.path.join(os.path.expanduser("~"), "Desktop")
             if not os.path.isdir(desktop):
                 desktop = os.path.expanduser("~")
-            stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(desktop, f"打盗全家捅监控_导出_{stamp}.txt")
             with open(path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))

@@ -738,6 +738,29 @@
   var tableSearchInput = document.getElementById('tableSearchInput');
   var btnTbSearchClear = document.getElementById('btnTbSearchClear');
 
+  /* ==================== 常量区 ==================== */
+  /* 页签哨兵值：表示「不过滤来源」 */
+  var TAB_ALL = '全部';
+
+  /* 右键菜单「打开源链接」用的引擎搜索页 URL（只挪位置，不改内容） */
+  var ENGINE_URL = {
+    'baidu':          'https://www.baidu.com/s?wd=',
+    'baidu_mobile':   'https://m.baidu.com/s?word=',
+    'sogou_pc':       'https://www.sogou.com/web?query=',
+    'sogou_mobile':   'https://m.sogou.com/web/searchList.jsp?keyword=',
+    'so360_pc':       'https://www.so.com/s?q=',
+    'so360_mobile':   'https://m.so.com/s?q=',
+    'bing':           'https://www.bing.com/search?q=',
+    'toutiao_pc':     'https://so.toutiao.com/search?keyword=',
+    'toutiao_mobile': 'https://so.toutiao.com/search?keyword=',
+    'zhidao':         'https://zhidao.baidu.com/search?word=',
+    'zhidao_mobile':  'https://zhidao.baidu.com/search?word=',
+    'tieba':          'https://tieba.baidu.com/f/search/res?qw=',
+    'quark_cn':       'https://quark.sm.cn/s?q=',
+    'sogou_weixin':   'https://weixin.sogou.com/weixin?type=2&query=',
+    'weibo_mobile':   'https://s.weibo.com/weibo?q='
+  };
+
   /* ==================== 行多选状态（批 4-A-1） ==================== */
   var _lastAnchorRowIdx = null;   // 上次点击的行序号（Shift 区间用）
 
@@ -746,11 +769,6 @@
     return Array.prototype.slice.call(
       document.querySelectorAll('#tableBody .table-row')
     );
-  }
-
-  /* 某行的序号（DOM 位置，从 0 开始） */
-  function getRowIdx(rowEl) {
-    return getAllRows().indexOf(rowEl);
   }
 
   /* ==================== 框选状态（批 4-A-2） ==================== */
@@ -770,7 +788,7 @@
   var _ctxTargetRow = null;     // 当前菜单作用的行元素
 
   /* ==================== 筛选状态（批 4-A-4） ==================== */
-  var _currentTabFilter = '全部';   // 当前来源页签
+  var _currentTabFilter = TAB_ALL;   // 当前来源页签
   var _searchBoxFilter = '';        // 工具栏搜索框关键词（小写）
 
   /* 取"作用行集合"：有选中行 → 所有选中行；否则 → 当前行 */
@@ -1105,24 +1123,6 @@
      行右键 / ⋯ 菜单（批 4-A-3）
      - 动作作用于「所有选中行」；没有选中行时只作用于右键/⋯ 的那一行
      ====================================================================== */
-  var ENGINE_URL = {
-    'baidu':          'https://www.baidu.com/s?wd=',
-    'baidu_mobile':   'https://m.baidu.com/s?word=',
-    'sogou_pc':       'https://www.sogou.com/web?query=',
-    'sogou_mobile':   'https://m.sogou.com/web/searchList.jsp?keyword=',
-    'so360_pc':       'https://www.so.com/s?q=',
-    'so360_mobile':   'https://m.so.com/s?q=',
-    'bing':           'https://www.bing.com/search?q=',
-    'toutiao_pc':     'https://so.toutiao.com/search?keyword=',
-    'toutiao_mobile': 'https://so.toutiao.com/search?keyword=',
-    'zhidao':         'https://zhidao.baidu.com/search?word=',
-    'zhidao_mobile':  'https://zhidao.baidu.com/search?word=',
-    'tieba':          'https://tieba.baidu.com/f/search/res?qw=',
-    'quark_cn':       'https://quark.sm.cn/s?q=',
-    'sogou_weixin':   'https://weixin.sogou.com/weixin?type=2&query=',
-    'weibo_mobile':   'https://s.weibo.com/weibo?q='
-  };
-
   window.showRowMenu = function (x, y) {
     var menu = document.getElementById('rowContextMenu');
     if (!menu) { return; }
@@ -1194,7 +1194,7 @@
     var text = urls.join('\n');
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(function () {
-        window.appendLog('已复制 ' + urls.length + ' 个链接');
+        logCount('已复制', urls.length);
       }, function () {
         window.appendLog('[错误] 复制失败（剪贴板被拒绝）');
       });
@@ -1207,7 +1207,7 @@
       ta.select();
       try { document.execCommand('copy'); } catch (err) { /* 忽略 */ }
       document.body.removeChild(ta);
-      window.appendLog('已复制 ' + urls.length + ' 个链接');
+      logCount('已复制', urls.length);
     }
   }
 
@@ -1216,19 +1216,19 @@
     var rows = getActionRows();
     if (rows.length === 0) { return; }
     var items = collectRowItems(rows);
-    var urls = items.map(function (it) { return it.url; }).filter(Boolean);
+    var urls = collectUrls(items);
 
     if (act === 'copy') {
       actCopyUrls(urls);
 
     } else if (act === 'open') {
       if (urls.length === 0) { window.appendLog('[提示] 没有可打开的链接'); return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       urls.forEach(function (u) { window.pywebview.api.open_url(u); });
-      window.appendLog('已打开 ' + urls.length + ' 个链接');
+      logCount('已打开', urls.length);
 
     } else if (act === 'open-src') {
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       var cnt = 0;
       items.forEach(function (it) {
         if (!it.keyword) { return; }
@@ -1241,7 +1241,7 @@
 
     } else if (act === 'white') {
       if (urls.length === 0) { window.appendLog('[提示] 没有可加入白名单的链接'); return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.add_to_whitelist(urls).then(function () {
         rows.forEach(function (r) {
           r.classList.add('row-white');
@@ -1252,20 +1252,19 @@
         });
         window.reorderRows();
         syncCheckAllState();
-        window.appendLog('已加入白名单 ' + urls.length + ' 个链接');
+        logCount('已加入白名单', urls.length);
       });
 
     } else if (act === 'unwhite') {
       if (urls.length === 0) { window.appendLog('[提示] 没有可取消白名单的链接'); return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.remove_from_whitelist(urls).then(function () {
         rows.forEach(function (r) {
           r.classList.remove('row-white');
           delete r.dataset.whiteCommon;
-          delete r.dataset.wlWord;
         });
         window.reorderRows();
-        window.appendLog('已取消白名单 ' + urls.length + ' 个链接');
+        logCount('已取消白名单', urls.length);
       });
     }
   };
@@ -1334,7 +1333,7 @@
     var allRows = getAllRows();
     allRows.forEach(function (r) {
       var src = r.dataset.source || '';
-      var tabOK = (_currentTabFilter === '全部') || (src === _currentTabFilter);
+      var tabOK = (_currentTabFilter === TAB_ALL) || (src === _currentTabFilter);
 
       var textOK = true;
       if (_searchBoxFilter) {
@@ -1425,6 +1424,29 @@
     return !!(window.pywebview && window.pywebview.api);
   }
 
+  /* 调后端前的统一守卫：就绪返回 true，否则记一条错误日志并返回 false */
+  function requireApi() {
+    if (!apiReady()) {
+      window.appendLog('[错误] pywebview.api 还没就绪');
+      return false;
+    }
+    return true;
+  }
+
+  /* 统一的「N 个链接」日志 */
+  function logCount(prefix, n) {
+    window.appendLog(prefix + ' ' + n + ' 个链接');
+  }
+
+  /* 从 DOM 行（tr）或 {url:...} 对象里取出非空 url 数组 */
+  function collectUrls(items) {
+    return items.map(function (it) {
+      var raw = (it.url !== undefined && it.url !== null) ? it.url
+        : (it.dataset ? it.dataset.url : '');
+      return String(raw || '').trim();
+    }).filter(function (u) { return !!u; });
+  }
+
   /* ==================== 搜索中状态切换 ==================== */
   /* Python 侧搜完/开跑时会调 window.setSearching(true/false) */
   window.setSearching = function (isSearching) {
@@ -1464,7 +1486,7 @@
 
     var sources = getCheckedSources();
     if (!sources.length) { window.appendLog('[提示] 请至少勾选一个来源'); return; }
-    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+    if (!requireApi()) { return; }
 
     var pages = getPagesArg();
     window.pywebview.api.start_search([{ book: book, keyword: book }], sources, pages)
@@ -1484,7 +1506,7 @@
 
     var sources = getCheckedSources();
     if (!sources.length) { window.appendLog('[提示] 请至少勾选一个来源'); return; }
-    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+    if (!requireApi()) { return; }
 
     var pages = getPagesArg();
 
@@ -1576,7 +1598,7 @@
         window.appendLog('当前没有可导出的内容');
         return;
       }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.export_results(rows).then(function (res) {
         if (res === 'empty') { window.appendLog('当前没有可导出的内容'); }
       });
@@ -1595,7 +1617,7 @@
         ok = true;
       }
       if (ok === false) { return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.clear_seen_urls();
     });
   }
@@ -1614,15 +1636,14 @@
         window.appendLog('没有选中任何行');
         return;
       }
-      var urls = rows.map(function (r) { return (r.dataset.url || '').trim(); })
-                     .filter(function (u) { return !!u; });
+      var urls = collectUrls(rows);
       if (urls.length === 0) {
         window.appendLog('选中的行没有链接');
         return;
       }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       urls.forEach(function (u) { window.pywebview.api.open_url(u); });
-      window.appendLog('已打开 ' + urls.length + ' 个链接');
+      logCount('已打开', urls.length);
     });
   }
 
@@ -1630,8 +1651,7 @@
   if (btnTbCopy) {
     btnTbCopy.addEventListener('click', function () {
       var rows = getActionRows();
-      var urls = rows.map(function (r) { return (r.dataset.url || '').trim(); })
-                     .filter(function (u) { return !!u; });
+      var urls = collectUrls(rows);
       if (urls.length === 0) {
         window.appendLog('没有选中任何行');
         return;
@@ -1643,7 +1663,7 @@
   /* 「载入历史数据」：读 seen_urls.json，逐条追加到表格（不清空已有结果） */
   if (btnTbHistory) {
     btnTbHistory.addEventListener('click', function () {
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.load_history().then(function (records) {
         if (!records || records.length === 0) {
           window.appendLog('历史记录为空');
@@ -1679,7 +1699,7 @@
         ok = true;
       }
       if (ok === false) { return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.clear_cookies();
     });
   }
@@ -1754,11 +1774,10 @@
   if (btnTbWhite) {
     btnTbWhite.addEventListener('click', function () {
       var rows = checkedRows();
-      var urls = rows.map(function (row) { return (row.dataset.url || '').trim(); })
-                     .filter(function (u) { return !!u; });
+      var urls = collectUrls(rows);
 
       if (!urls.length) { window.appendLog('[提示] 请先勾选要加白名单的行'); return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
 
       window.pywebview.api.add_to_whitelist(urls).then(function () {
         rows.forEach(function (row) {
@@ -1774,13 +1793,12 @@
   if (btnTbResetWhite) {
     btnTbResetWhite.addEventListener('click', function () {
       if (!window.confirm('确定要清空全部白名单吗？')) { return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
 
       window.pywebview.api.clear_whitelist().then(function () {
         allRows().forEach(function (row) {
           row.classList.remove('row-white');
           delete row.dataset.whiteCommon;
-          delete row.dataset.wlWord;
         });
         window.reorderRows();
       });
@@ -1797,7 +1815,7 @@
   /* 打开弹窗：拉取现有白名单词，按行填进 textarea */
   if (btnTbWhiteWords) {
     btnTbWhiteWords.addEventListener('click', function () {
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.get_whitelist_words().then(function (words) {
         wlWordsInput.value = (words || []).join('\n');
         wlWordsDialog.classList.add('show');
@@ -1814,7 +1832,7 @@
   /* 保存：按行拆分 → 全量替换 → Python 侧会自动调 applyWhitelistWords 刷新 */
   if (btnWlWordsSave) {
     btnWlWordsSave.addEventListener('click', function () {
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       var words = (wlWordsInput.value || '').split(/\r?\n/)
         .map(function (s) { return s.trim(); })
         .filter(function (s) { return !!s; });
@@ -2041,7 +2059,7 @@
   window.openSuffixPopup = function (bmId, chipEl) {
     var popup = document.getElementById('suffixPopup');
     if (!popup) { return; }
-    if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+    if (!requireApi()) { return; }
     window.pywebview.api.get_bookmarks().then(function (books) {
       var bm = (books || []).find(function (b) { return b.id === bmId; });
       if (!bm) { return; }
@@ -2144,7 +2162,7 @@
     btnBookmark.addEventListener('click', function () {
       var name = (bookInput.value || '').trim();
       if (!name) { window.appendLog('[提示] 请先输入书名'); return; }
-      if (!apiReady()) { window.appendLog('[错误] pywebview.api 还没就绪'); return; }
+      if (!requireApi()) { return; }
       window.pywebview.api.add_bookmark(name);
     });
   }
