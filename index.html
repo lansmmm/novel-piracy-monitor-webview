@@ -141,6 +141,14 @@
   .btn-sm-green { background: var(--primary); color: #FFFFFF; }
   .btn-sm-gray  { background: var(--disabled-bg); color: #455A64; }
 
+  .btn-sm-quiet {
+    background: #F5F7FA;
+    color: #9AA5B1;
+  }
+  .btn-sm-quiet:hover {
+    background: #ECEFF1;
+  }
+
   /* 工具栏竖线：1px 高 20，左右各 6px */
   .sep {
     width: 1px;
@@ -632,12 +640,12 @@
     <span class="sep"></span>
     <button id="btnTbWhite" class="btn-sm">加白名单</button>
     <button id="btnTbWhiteWords" class="btn-sm">白名单词</button>
-    <button id="btnTbResetWhite" class="btn-sm btn-sm-gray">重置白名单</button>
+    <button id="btnTbResetWhite" class="btn-sm btn-sm-quiet">重置白名单</button>
     <span class="sep"></span>
     <button id="btnTbExport" class="btn-sm">导出结果</button>
     <button id="btnTbClear" class="btn-sm btn-sm-gray">清空列表</button>
     <button id="btnTbHistory" class="btn-sm">载入历史数据</button>
-    <button id="btnTbClearSeen" class="btn-sm btn-sm-gray">清空历史记录</button>
+    <button id="btnTbClearSeen" class="btn-sm btn-sm-quiet">重置历史记录</button>
     <span class="spacer"></span>
     <input id="tableSearchInput" class="input input-search" type="text"
            placeholder="筛选标题/摘要/链接">
@@ -886,12 +894,12 @@
 
     row.appendChild(makeCell('来源', 'td col-src', r.source));
 
-    /* 标题格（批 5-D）：新链接 → 加粗 + 前缀【新盗文！】 */
+    /* 标题格（批 5-D）：新链接 → 加粗 + 前缀【新发现！】 */
     var isNew = !!r.isNew;
     var titleCell = document.createElement('div');
     titleCell.className = 'td col-title';
     var titleText = (r.title === null || r.title === undefined) ? '' : String(r.title);
-    if (isNew) { titleText = '【新盗文！】' + titleText; }
+    if (isNew) { titleText = '【新发现！】' + titleText; }
     titleCell.textContent = titleText;
     titleCell.title = titleText;
     titleCell.setAttribute('data-label', '标题');
@@ -1605,14 +1613,14 @@
     });
   }
 
-  /* ==================== 清空历史记录（批 5-D） ==================== */
+  /* ==================== 重置历史记录（批 5-D） ==================== */
   var btnTbClearSeen = document.getElementById('btnTbClearSeen');
   if (btnTbClearSeen) {
     btnTbClearSeen.addEventListener('click', function () {
       /* confirm 在个别 WebView 后端可能不可用 → 抛错时按「确认」继续 */
       var ok = true;
       try {
-        ok = window.confirm('清空历史记录？清空后，以前搜过的 URL 会重新标记为【新盗文！】');
+        ok = window.confirm('重置历史记录？\n重置后，以前搜过的 URL 会重新标记为【新发现！】。');
       } catch (e) {
         ok = true;
       }
@@ -1792,7 +1800,14 @@
   /* 「重置白名单」：确认后清空并落盘，移除所有灰化标记 */
   if (btnTbResetWhite) {
     btnTbResetWhite.addEventListener('click', function () {
-      if (!window.confirm('确定要清空全部白名单吗？')) { return; }
+      /* confirm 在个别 WebView 后端可能不可用 → 抛错时按「确认」继续 */
+      var ok = true;
+      try {
+        ok = window.confirm('重置白名单？\n将清空全部已加白的 URL（不可恢复）。');
+      } catch (e) {
+        ok = true;
+      }
+      if (ok === false) { return; }
       if (!requireApi()) { return; }
 
       window.pywebview.api.clear_whitelist().then(function () {

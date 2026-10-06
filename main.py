@@ -534,15 +534,15 @@ class Api:
         print("[dedupe] 已清空已显示 URL 集合")
         return "ok"
 
-    # ==================== 清空历史记录（批 5-D） ====================
+    # ==================== 重置历史记录（批 5-D） ====================
     def clear_seen_urls(self):
-        """清空 seen_urls.json：清空后以前搜过的 URL 会重新标记为新盗文"""
+        """清空 seen_urls.json：清空后以前搜过的 URL 会重新标记为新发现"""
         _load_seen_urls()
         with _seen_urls_lock:
             n = len(_seen_urls)
             _seen_urls.clear()
             _save_seen_urls()
-        self.push_log(f"已清空历史记录（原 {n} 条 URL）")
+        self.push_log(f"已重置历史记录（原 {n} 条 URL）")
         print(f"[seen_urls] cleared {n} 条")
         return n
 
@@ -893,6 +893,193 @@ class Api:
         )
         return "started"
 
+    def _emit_summary(self, t_start, stat, zero_terms, total_pushed):
+        """搜索结束后输出汇总报告（按来源统计 + 0 结果词 + 用时）"""
+        elapsed = int(time.time() - t_start)
+        self.push_log("━━━━━━ 搜索汇总 ━━━━━━")
+        self.push_log(f"本轮共 {total_pushed} 条结果，用时 {elapsed} 秒")
+
+        if stat:
+            self.push_log("按来源：")
+            for lb, n in sorted(stat.items(), key=lambda x: -x[1]):
+                self.push_log(f"  {lb}: {n} 条")
+        else:
+            self.push_log("  本轮无结果")
+
+        if zero_terms:
+            self.push_log(f"0 结果搜索词（共 {len(zero_terms)} 个组合）：")
+            for lb, kw in zero_terms[:20]:
+                self.push_log(f"  [{lb}] {kw}")
+            if len(zero_terms) > 20:
+                self.push_log(f"  ...（还有 {len(zero_terms) - 20} 个）")
+
+    def _build_jobs(self, sources, tasks):
+        """把「勾选来源 × 搜索词」展开成扁平作业列表。
+
+        返回 list of tuple:
+          (ti, keyword, book, engine_id, src_id, is_first_of_task)
+        - ti: 该搜索词的序号（从 1 开始，用于日志"第 N/M 个搜索"）
+        - is_first_of_task: 是否是同一搜索词下的第一个引擎
+        """
+        # 展开来源 → 引擎列表（深度模式全展开，常规模式只取第一个）
+        engine_tasks = []
+        for src_id in sources:
+            versions = SOURCE_GROUPS.get(src_id, [src_id])
+            if _deep_mode["v"]:
+                for v in versions:
+                    engine_tasks.append((v, src_id))
+            else:
+                engine_tasks.append((versions[0], src_id))
+
+        total_tasks = len(tasks)
+        jobs = []
+        for ti, task in enumerate(tasks, 1):
+            kw = task["keyword"]
+            bk = task["book"]
+            for ei, (et_engine_id, et_src_id) in enumerate(engine_tasks):
+                jobs.append((ti, kw, bk, et_engine_id, et_src_id, ei == 0))
+
+        if total_tasks > 1:
+            self.push_log(f"共 {total_tasks} 个搜索词，合计 {len(jobs)} 个作业")
+
+        return jobs
+
+    def _emit_page_results(self, label, page_results, book, keyword, engine_id, page_num):
+        """处理一页结果：屏蔽过滤 + 书名匹配 + 归类去重 + 推送表格 + 白名单词命中。
+
+        返回 (matched_count, wl_dirty)：
+          - matched_count: 本页命中条数（用于外层累加统计）
+          - wl_dirty: 是否因命中白名单词改了白名单（需要外层落盘）
+        """
+        # 1) 屏蔽域名 / URL 特征过滤
+        filtered = []
+        for r in page_results:
+            u = (r.get("url") or "").lower()
+            if any(d in u for d in BLOCKED_DOMAINS):
+                continue
+            if any(tok in u for tok in BLOCKED_URL_TOKENS):
+                continue
+            filtered.append(r)
+
+        # 2) 书名匹配过滤
+        matched = []
+        for r in filtered:
+            title = r.get("title", "")
+            summary = r.get("summary", "")
+            if title_or_summary_matches(book, title, summary):
+                matched.append(r)
+
+        self.push_log(
+            f"【{label} 第 {page_num + 1} 页】命中 "
+            f"{len(matched)} / 原始 {len(page_results)} 条"
+        )
+
+        # 3) 归类 + 推送（同一来源同一 URL 只显示一次）
+        wl_dirty = False
+        for r in matched:
+            src_label = classify_source(label, r)
+            url = (r.get("url") or "").strip()
+
+            # 命中白名单词 → 该 URL 自动加入白名单
+            if _match_whitelist_word(r):
+                if url and url not in _whitelist_common:
+                    _whitelist_common.add(url)
+                    wl_dirty = True
+
+            key = (src_label, url)
+            if url and key in _displayed_urls:
+                continue
+            if url:
+                _displayed_urls.add(key)
+
+            # ★ 批 5-D：只对最终要推送的行判「新链接」
+            #   （放在 _displayed_urls 去重之后，避免被过滤的行污染集合）
+            is_new = _mark_seen(url, book, src_label) if url else False
+            self.push_row({
+                "source": src_label,
+                "title": r.get("title", ""),
+                "date": r.get("date", "未知"),
+                "summary": r.get("summary", ""),
+                "url": r.get("url", ""),
+                "keyword": keyword,
+                "book": book,          # 批 5-C：导出按 (书名, 来源) 分组用
+                "srcId": engine_id,
+                "isNew": is_new,       # 批 5-D：新链接标记
+                "is_white": bool(url) and url in _whitelist_common,
+            })
+
+        return len(matched), wl_dirty
+
+    def _run_one_engine(self, adapter, context, engine_id, src_id, label,
+                        keyword, book, max_pages, skip_engines):
+        """跑一个引擎：翻页 + 每页处理 + 验证码分支。
+
+        返回 (all_results_count, job_matched)：
+          - all_results_count: 本引擎原始结果总条数（含被过滤的）
+          - job_matched: 本引擎命中总条数（用于外层统计）
+        副作用：可能往 skip_engines 里加该引擎 id（撞验证码时）
+        """
+        all_results = []
+        job_matched = 0
+        adapter.captcha_hit = False
+        try:
+            engine = ENGINE_MAP[engine_id](adapter)
+            page_num = 0
+            captcha_retry = 0
+            while page_num < max_pages:
+                if _stop_event.is_set():
+                    break
+                try:
+                    page_results = engine.fetch(
+                        context, keyword, page_num=page_num, book_kw=book
+                    )
+                except Exception as e:
+                    self.push_log(f"{label} 第 {page_num + 1} 页出错：{e}")
+                    break
+
+                # 验证码分支
+                if adapter.captcha_hit:
+                    adapter.captcha_hit = False
+                    _stats_add_captcha()
+                    if _stop_event.is_set():
+                        break
+                    if _frontend_mode["v"] and adapter.wait_continue_event.is_set():
+                        captcha_retry += 1
+                        if captcha_retry > MAX_CAPTCHA_RETRY:
+                            skip_engines.add(engine_id)
+                            self.push_log(
+                                f"{label} 连续 {MAX_CAPTCHA_RETRY} 次验证未通过，本轮跳过该引擎"
+                            )
+                            break
+                        self.push_log(f"{label} 验证码已处理，重试当前页")
+                        continue
+                    else:
+                        skip_engines.add(engine_id)
+                        if _frontend_mode["v"]:
+                            self.push_log(f"{label} 验证未完成（超时/已停止），本轮跳过该引擎")
+                        else:
+                            self.push_log(f"{label} 后台模式撞验证码，本轮跳过该引擎")
+                        break
+
+                if not page_results:
+                    break
+
+                page_matched, wl_dirty = self._emit_page_results(
+                    label, page_results, book, keyword, engine_id, page_num
+                )
+                job_matched += page_matched
+                if wl_dirty:
+                    _save_whitelist()
+                all_results.extend(page_results)
+                page_num += 1
+                captcha_retry = 0
+                if _stop_event.is_set():
+                    break
+        except Exception as e:
+            self.push_log(f"{label} 出错：{e}")
+
+        return len(all_results), job_matched
+
     def _search_loop_real(self, tasks, sources, pages):
         """真抓取：开 Edge → 逐个来源跑引擎 → 每个引擎翻 N 页 → 日志 / 表格逐行推
 
@@ -941,28 +1128,8 @@ class Api:
                 _current_adapter["v"] = adapter
                 _skip_engines = set()   # 后台模式撞验证后，该引擎本轮全跳过
 
-                # 展开来源 → 引擎列表（深度模式全展开，常规模式只取第一个）
-                engine_tasks = []
-                for src_id in sources:
-                    versions = SOURCE_GROUPS.get(src_id, [src_id])
-                    if _deep_mode["v"]:
-                        for v in versions:
-                            engine_tasks.append((v, src_id))
-                    else:
-                        engine_tasks.append((versions[0], src_id))
-
-                # 展开「任务 × 引擎」→ 扁平作业列表
-                # 每个 task = {"book": 书签名, "keyword": 真正搜索词}
+                jobs = self._build_jobs(sources, tasks)
                 total_tasks = len(tasks)
-                jobs = []               # (ti, keyword, book, engine_id, src_id, 是否该任务首引擎)
-                for ti, task in enumerate(tasks, 1):
-                    kw = task["keyword"]
-                    bk = task["book"]
-                    for ei, (et_engine_id, et_src_id) in enumerate(engine_tasks):
-                        jobs.append((ti, kw, bk, et_engine_id, et_src_id, ei == 0))
-
-                if total_tasks > 1:
-                    self.push_log(f"共 {total_tasks} 个搜索词，合计 {len(jobs)} 个作业")
 
                 total = len(jobs)
                 for i, (ti, keyword, book, engine_id, src_id, first_of_task) in enumerate(jobs, 1):
@@ -996,134 +1163,24 @@ class Api:
                         except Exception:                         # noqa: BLE001
                             max_pages = 10
 
-                    all_results = []
-                    _job_matched = 0                  # 本作业（来源 × 搜索词）命中数
-                    adapter.captcha_hit = False
-                    try:
-                        engine = engine_cls(adapter)
-                        page_num = 0
-                        captcha_retry = 0
-                        while page_num < max_pages:
-                            if _stop_event.is_set():
-                                break
-                            try:
-                                page_results = engine.fetch(
-                                    context, keyword, page_num=page_num, book_kw=book
-                                )
-                            except Exception as e:                # noqa: BLE001
-                                self.push_log(f"{label} 第 {page_num + 1} 页出错：{e}")
-                                break
+                    all_results_count, job_matched = self._run_one_engine(
+                        adapter, context, engine_id, src_id, label,
+                        keyword, book, max_pages, _skip_engines
+                    )
 
-                            # ★ 引擎撞验证码时调过 pause_for_user，然后 return 了空结果，
-                            #   这次 fetch 的结果不可信，按模式分别处理
-                            if adapter.captcha_hit:
-                                adapter.captcha_hit = False
-                                _stats_add_captcha()          # 批 5-B：验证码次数 +1
-                                if _stop_event.is_set():
-                                    break
-                                if _frontend_mode["v"] and adapter.wait_continue_event.is_set():
-                                    # 前台：用户已过验证 → 重试当前页（不 page_num++）
-                                    captcha_retry += 1
-                                    if captcha_retry > MAX_CAPTCHA_RETRY:
-                                        _skip_engines.add(engine_id)
-                                        self.push_log(
-                                            f"{label} 连续 {MAX_CAPTCHA_RETRY} 次验证未通过，"
-                                            "本轮跳过该引擎"
-                                        )
-                                        break
-                                    self.push_log(f"{label} 验证码已处理，重试当前页")
-                                    continue
-                                else:
-                                    # 后台模式：直接跳过该引擎；
-                                    # 前台模式但没等到确认（超时/已停止）：同样跳过
-                                    _skip_engines.add(engine_id)
-                                    if _frontend_mode["v"]:
-                                        self.push_log(f"{label} 验证未完成（超时/已停止），本轮跳过该引擎")
-                                    else:
-                                        self.push_log(f"{label} 后台模式撞验证码，本轮跳过该引擎")
-                                    break
-
-                            if not page_results:
-                                break
-
-                            # 1) 屏蔽域名 / URL 特征过滤
-                            filtered = []
-                            for r in page_results:
-                                u = (r.get("url") or "").lower()
-                                if any(d in u for d in BLOCKED_DOMAINS):
-                                    continue
-                                if any(tok in u for tok in BLOCKED_URL_TOKENS):
-                                    continue
-                                filtered.append(r)
-
-                            # 2) 书名匹配过滤（标题 / 摘要必须含书名的所有字）
-                            matched = []
-                            for r in filtered:
-                                title = r.get("title", "")
-                                summary = r.get("summary", "")
-                                if title_or_summary_matches(book, title, summary):
-                                    matched.append(r)
-
-                            self.push_log(
-                                f"【{label} 第 {page_num + 1} 页】命中 "
-                                f"{len(matched)} / 原始 {len(page_results)} 条"
-                            )
-
-                            # ★ 批 5-A：按来源累计命中数（搜索词之间的累加）
-                            _stat[label] = _stat.get(label, 0) + len(matched)
-                            _job_matched += len(matched)
-                            _total_pushed += len(matched)
-
-                            # 3) 归类 + 推送（同一来源同一 URL 只显示一次）
-                            _wl_dirty = False
-                            for r in matched:
-                                src_label = classify_source(label, r)
-                                url = (r.get("url") or "").strip()
-
-                                # 命中白名单词 → 该 URL 自动加入白名单
-                                if _match_whitelist_word(r):
-                                    if url and url not in _whitelist_common:
-                                        _whitelist_common.add(url)
-                                        _wl_dirty = True
-
-                                key = (src_label, url)
-                                if url and key in _displayed_urls:
-                                    continue
-                                if url:
-                                    _displayed_urls.add(key)
-                                # ★ 批 5-D：只对最终要推送的行判「新链接」
-                                #   （放在 _displayed_urls 去重之后，避免被过滤的行污染集合）
-                                is_new = _mark_seen(url, book, src_label) if url else False
-                                self.push_row({
-                                    "source": src_label,
-                                    "title": r.get("title", ""),
-                                    "date": r.get("date", "未知"),
-                                    "summary": r.get("summary", ""),
-                                    "url": r.get("url", ""),
-                                    "keyword": keyword,
-                                    "book": book,          # 批 5-C：导出按 (书名, 来源) 分组用
-                                    "srcId": engine_id,
-                                    "isNew": is_new,       # 批 5-D：新链接标记
-                                    "is_white": bool(url) and url in _whitelist_common,
-                                })
-                            if _wl_dirty:
-                                _save_whitelist()
-                            all_results.extend(page_results)
-                            page_num += 1
-                            captcha_retry = 0
-                            if _stop_event.is_set():
-                                break
-                    except Exception as e:                        # noqa: BLE001
-                        self.push_log(f"{label} 出错：{e}")
-
-                    self.push_log(f"{label} 共 {len(all_results)} 条")
+                    self.push_log(f"{label} 共 {all_results_count} 条")
 
                     # ★ 批 5-A：本作业一条都没命中 → 记进 0 结果清单
-                    if _job_matched == 0:
+                    if job_matched == 0:
                         _zero_terms.append((label, keyword))
                     else:
                         # ★ 批 5-B：按来源累计命中（跨轮写盘）
-                        _stats_add_source_hits(label, _job_matched)
+                        _stats_add_source_hits(label, job_matched)
+
+                    # ★ 批 5-A：累加到本轮来源统计（跟 0 结果判定无关）
+                    if job_matched > 0:
+                        _stat[label] = _stat.get(label, 0) + job_matched
+                        _total_pushed += job_matched
 
                     if _stop_event.is_set():
                         break
@@ -1139,24 +1196,7 @@ class Api:
             else:
                 self.push_log("搜索完成")
 
-            # ==================== 批 5-A：搜索汇总 ====================
-            _elapsed = int(time.time() - _t_start)
-            self.push_log("━━━━━━ 搜索汇总 ━━━━━━")
-            self.push_log(f"本轮共 {_total_pushed} 条结果，用时 {_elapsed} 秒")
-
-            if _stat:
-                self.push_log("按来源：")
-                for _lb, _n in sorted(_stat.items(), key=lambda x: -x[1]):
-                    self.push_log(f"  {_lb}: {_n} 条")
-            else:
-                self.push_log("  本轮无结果")
-
-            if _zero_terms:
-                self.push_log(f"0 结果搜索词（共 {len(_zero_terms)} 个组合）：")
-                for _lb, _kw in _zero_terms[:20]:
-                    self.push_log(f"  [{_lb}] {_kw}")
-                if len(_zero_terms) > 20:
-                    self.push_log(f"  ...（还有 {len(_zero_terms) - 20} 个）")
+            self._emit_summary(_t_start, _stat, _zero_terms, _total_pushed)
 
             # ★ 批 5-D：本轮历史记录落盘（搜索结束后、finally 之前）
             _save_seen_urls()
