@@ -8,7 +8,7 @@ from engines.base import BaseEngine
 class WeiboMobileEngine(BaseEngine):
     SOURCE_ID = 'weibo_mobile'
     SOURCE_LABEL = '微博移动'
-    SEARCH_URL = 'https://m.weibo.cn/search?containerid=100103type%3D1%26q%3D{kw}'
+    SEARCH_URL = 'https://m.weibo.cn/search?containerid=100103type%3D61%26q%3D{kw}'
     EXTRA_URL = 'https://service.account.weibo.com/rights/movie'   # 微博版权投诉页
 
     API_URL = 'https://m.weibo.cn/api/container/getIndex'
@@ -186,7 +186,7 @@ class WeiboMobileEngine(BaseEngine):
             if mblogs is None:
                 self.log("  [微博移动] 需要登录/被风控，打开微博搜索页处理…")
                 page = self._open_search_page(context, cid)
-                self.pause_for_user('微博要求登录/人机验证，请在打开的微博页面里处理')
+                self.pause_for_user('微博要求登录/人机验证，请在打开的微博页面里处理。提示：未登录访客态下微博会降级为【综合排序】（结果含旧帖），登录后可获得【实时排序】')
 
                 mblogs, _ = self._search_once(context, term)
                 if mblogs is None:

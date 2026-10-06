@@ -8,13 +8,13 @@ from engines.base import BaseEngine
 class WeiboEngine(BaseEngine):
     SOURCE_ID = 'weibo'
     SOURCE_LABEL = '微博'
-    SEARCH_URL = 'https://s.weibo.com/weibo?q={kw}'
+    SEARCH_URL = 'https://s.weibo.com/realtime?q={kw}&rd=realtime&tw=realtime&Refer=weibo_realtime'
     EXTRA_URL = 'https://service.account.weibo.com/rights/movie'   # 微博版权投诉页
 
     def fetch(self, context, term, page_num=0, book_kw=''):
         page = None
         try:
-            url = f"https://s.weibo.com/weibo?q={quote(term)}"
+            url = f"https://s.weibo.com/realtime?q={quote(term)}&rd=realtime&tw=realtime&Refer=weibo_realtime"
             page = self._create_stealth_page(context)
             page.goto(url, wait_until="domcontentloaded", timeout=30000)
             time.sleep(random.uniform(2, 4))
@@ -22,7 +22,7 @@ class WeiboEngine(BaseEngine):
             cur = (page.url or '').lower()
             body_text = (page.text_content('body') or '').lower()
             if 'captcha' in cur or 'verify' in cur or '验证码' in body_text or '人机验证' in body_text:
-                self.pause_for_user('微博搜索要求验证码/登录')
+                self.pause_for_user('微博搜索要求验证码/登录。提示：未登录访客态下微博会降级为【综合排序】（结果含旧帖），登录后可获得【实时排序】')
                 return []
 
             items = page.evaluate(r"""

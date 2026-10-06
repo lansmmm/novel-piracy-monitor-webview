@@ -506,6 +506,14 @@
 
   .log-line.alert { color: #FF6B6B; }
 
+  .log-line.warn {
+    background: #3D1A1A;
+    color: #FFB4B4;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin: 2px 0;
+  }
+
   /* 日志区小按钮：高 22、字号 12 */
   .btn-xs {
     height: 22px;
@@ -833,6 +841,8 @@
     }
 
     if (msg.indexOf('[暂停]') !== -1) { line.classList.add('alert'); }
+
+    if (msg.indexOf('[!!]') !== -1) { line.classList.add('warn'); }
 
     logBody.appendChild(line);
     logBody.scrollTop = logBody.scrollHeight;   // 自动滚到最新一行

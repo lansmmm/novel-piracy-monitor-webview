@@ -1096,6 +1096,12 @@ class Api:
             src_text = " / ".join(SOURCE_LABELS.get(s, s) for s in sources) or "（无）"
             self.push_log(f"已勾选来源：{src_text}")
             self.push_log(f"页数：{pages}")
+
+            if "weibo" in sources:
+                self.push_log(
+                    "[!!] 微博搜索提醒：未登录访客态下，微博会把结果降级为【综合排序】"
+                    "（结果含旧帖）。如需【实时排序】，请在前台模式下打开微博页面手动登录一次。"
+                )
             self.push_log(
                 "模式：前台 %s ｜ 深度 %s"
                 % (
