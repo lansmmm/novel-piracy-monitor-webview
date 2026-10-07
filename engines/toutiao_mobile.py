@@ -168,7 +168,7 @@ class ToutiaoMobileEngine(BaseEngine):
             return []
         finally:
             try:
-                if page:
+                if page and not getattr(self.app, 'keep_page', False):
                     page.close()
             except Exception:
                 pass

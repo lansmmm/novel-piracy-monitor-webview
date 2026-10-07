@@ -21,6 +21,12 @@ import traceback
 import uuid
 import webbrowser
 
+try:
+    from winotify import Notification, audio
+    HAS_WINOTIFY = True
+except ImportError:
+    HAS_WINOTIFY = False
+
 import webview
 from playwright.sync_api import sync_playwright
 
@@ -424,6 +430,30 @@ def classify_source(label, r):
     return label
 
 
+def windows_toast(title, msg):
+    """Windows 桌面通知：自动消失（duration=short）。失败静默忽略。"""
+    if not HAS_WINOTIFY:
+        return
+    try:
+        icon_path = os.path.join(RESOURCE_DIR, "app_icon.ico")
+        kwargs = {
+            "app_id": "打盗全家捅",
+            "title": title,
+            "msg": msg,
+            "duration": "short",
+        }
+        if os.path.exists(icon_path):
+            kwargs["icon"] = icon_path
+        toast = Notification(**kwargs)
+        try:
+            toast.set_audio(audio.Default, loop=False)
+        except Exception:
+            pass
+        toast.show()
+    except Exception:
+        pass
+
+
 class WebViewAppAdapter:
     """把 pywebview 的 Api 包装成引擎能认的「app」对象。
 
@@ -443,6 +473,9 @@ class WebViewAppAdapter:
         # 验证码相关：引擎调 pause_for_user 时置 captcha_hit，
         # 搜索线程看到它就知道「这次 fetch 是撞验证码了，结果不可信」
         self.captcha_hit = False
+        # ★ 撞验证码时是否保留页面：前台=True（留给用户过验证），后台=False（正常关闭）
+        #   引擎 finally 里用 getattr(self.app, 'keep_page', False) 判断
+        self.keep_page = False
         self.wait_continue_event = threading.Event()
 
     def log(self, msg):
@@ -458,9 +491,22 @@ class WebViewAppAdapter:
           所以「用户过完验证」的重试动作由搜索线程负责（重试当前页）。
         """
         self.captcha_hit = True
+        # ★ 桌面通知：两种模式都弹，自动消失
+        if _frontend_mode["v"]:
+            windows_toast(
+                "⚠️ 检测到验证码",
+                "请到浏览器完成验证，然后回到程序点「我已过验证，继续」。"
+            )
+        else:
+            windows_toast(
+                "⚠️ 检测到验证码",
+                "某搜索引擎撞验证码，本轮已跳过该引擎。"
+            )
         self.push_log(f"[暂停] {reason}")
         # 只有前台模式才弹窗等用户；后台模式直接返回，由搜索线程跳过该引擎
         if _frontend_mode["v"]:
+            # ★ 前台：验证页留给用户手动过验证（引擎 finally 据此不关 page）
+            self.keep_page = True
             self.wait_continue_event.clear()
             # 通知前端弹窗（reason 走 json.dumps，避免引号 / 换行破坏 JS 语句）
             self.api._push_js(
@@ -476,6 +522,9 @@ class WebViewAppAdapter:
                 self.push_log("用户已确认，继续...")
             else:
                 self.push_log(f"[暂停] 等待超时（{CAPTCHA_WAIT_SECONDS} 秒），跳过该引擎")
+        else:
+            # ★ 后台：用户根本看不到验证页，留着没用，按正常流程关闭
+            self.keep_page = False
 
 
 class Api:
@@ -1022,6 +1071,7 @@ class Api:
         all_results = []
         job_matched = 0
         adapter.captcha_hit = False
+        adapter.keep_page = False
         try:
             engine = ENGINE_MAP[engine_id](adapter)
             page_num = 0

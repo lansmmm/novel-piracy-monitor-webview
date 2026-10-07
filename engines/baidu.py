@@ -171,5 +171,5 @@ class BaiduEngine(BaseEngine):
             return results
         finally:
             try:
-                if page: page.close()
+                if page and not getattr(self.app, 'keep_page', False): page.close()
             except Exception: pass

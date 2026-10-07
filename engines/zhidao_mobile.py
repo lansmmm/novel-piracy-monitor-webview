@@ -153,11 +153,6 @@ class ZhidaoMobileEngine(BaseEngine):
 
             cur = (page.url or "").lower()
             if "wappass" in cur or "verify" in cur or "captcha" in cur or "passport" in cur:
-                try:
-                    page.close()
-                except Exception:
-                    pass
-                page = None
                 self.pause_for_user("百度知道手机版要求验证码/登录")
                 return results
 
@@ -204,7 +199,7 @@ class ZhidaoMobileEngine(BaseEngine):
             return results
         finally:
             try:
-                if page:
+                if page and not getattr(self.app, 'keep_page', False):
                     page.close()
             except Exception:
                 pass

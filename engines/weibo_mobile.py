@@ -174,6 +174,7 @@ class WeiboMobileEngine(BaseEngine):
                 for it in (raw or [])]
 
     def fetch(self, context, term, page_num=0, book_kw=''):
+        page = None
         try:
             # 微博搜索接口只给第一页；page>=2 会返回 ok=-100，直接放弃剩余页
             if page_num > 0:
@@ -195,7 +196,7 @@ class WeiboMobileEngine(BaseEngine):
                     self.log("  [微博移动] 接口仍不可用，改为直接解析页面内容")
                     mblogs = self._mblogs_from_page(page)
                 try:
-                    if page:
+                    if page and not getattr(self.app, 'keep_page', False):
                         page.close()
                 except Exception:
                     pass
@@ -236,3 +237,10 @@ class WeiboMobileEngine(BaseEngine):
         except Exception as e:
             self.log(f"  [微博移动搜索错误] {type(e).__name__}: {e}")
             return []
+        finally:
+            # ★ 保留判断：前台模式撞风控时把页面留给用户（后台则正常关闭）
+            try:
+                if page and not getattr(self.app, 'keep_page', False):
+                    page.close()
+            except Exception:
+                pass
