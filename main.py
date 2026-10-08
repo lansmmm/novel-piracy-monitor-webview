@@ -30,7 +30,7 @@ except ImportError:
 import webview
 from playwright.sync_api import sync_playwright
 
-from config import SOURCE_GROUPS, BLOCKED_DOMAINS, BLOCKED_URL_TOKENS, WHITELIST_COMMON_FILE
+from config import SOURCE_GROUPS, BLOCKED_DOMAINS, BLOCKED_URL_TOKENS, ALLOWED_URL_PREFIXES, WHITELIST_COMMON_FILE
 from engines import ENGINE_MAP
 from utils import title_or_summary_matches, save_json
 
@@ -1001,13 +1001,16 @@ class Api:
           - wl_dirty: 是否因命中白名单词改了白名单（需要外层落盘）
         """
         # 1) 屏蔽域名 / URL 特征过滤
+        #    ★ 白名单例外：微信公众号正文页即使命中屏蔽词也要保留
         filtered = []
         for r in page_results:
             u = (r.get("url") or "").lower()
-            if any(d in u for d in BLOCKED_DOMAINS):
-                continue
-            if any(tok in u for tok in BLOCKED_URL_TOKENS):
-                continue
+            is_allowed = any(u.startswith(p) for p in ALLOWED_URL_PREFIXES)
+            if not is_allowed:
+                if any(d in u for d in BLOCKED_DOMAINS):
+                    continue
+                if any(tok in u for tok in BLOCKED_URL_TOKENS):
+                    continue
             filtered.append(r)
 
         # 2) 书名匹配过滤
@@ -1121,6 +1124,14 @@ class Api:
                 if wl_dirty:
                     _save_whitelist()
                 all_results.extend(page_results)
+
+                # ★ 过滤后 0 命中 → 后续页不可能有结果，停止翻页
+                #   （自动模式兜底 10 页，手动模式兜底用户设的页数，
+                #    由外层 max_pages 控制；这里只管"提前停"）
+                if page_matched == 0:
+                    self.push_log(f"{label} 第 {page_num + 1} 页 0 命中，停止翻页")
+                    break
+
                 page_num += 1
                 captcha_retry = 0
                 if _stop_event.is_set():

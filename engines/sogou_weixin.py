@@ -37,17 +37,64 @@ class SogouWeixinEngine(BaseEngine):
         m = re.search(r'var\s+' + re.escape(name) + r'\s*=\s*"([^"]*)"', html or '')
         return (m.group(1) or '').strip() if m else ''
 
-    def _resolve_weixin_article(self, context, link_url):
-        """打开 /link 页，拿到真实文章地址。
+    def _resolve_weixin_article(self, search_page, link_url):
+        """解析搜狗 /link 跳转壳，拿真链。
 
-        /link 其实是个 JS 模板页，里面带着 biz / mid / idx / sn 变量：
-        先等它自己跳到 mp.weixin.qq.com，等不到就用这些变量拼出文章地址。
+        方案 A（快）：在搜索页上跑 fetch → 从 HTML 提取 url += "..." 拼真链
+        方案 B（慢，回退）：新开 page 打开跳转壳 → 等 JS 跳转 / 提取 biz/mid/sn
         """
+        # ---------- 方案 A：fetch ----------
+        try:
+            html = search_page.evaluate(
+                """async (url) => {
+                    try {
+                        const r = await fetch(url, { credentials: 'include' });
+                        return await r.text();
+                    } catch (e) {
+                        return '';
+                    }
+                }""",
+                link_url,
+            )
+            if html:
+                # 从 HTML 里提取 `url += "..."` 片段拼真链（跟插件的正则一致）
+                parts = re.findall(r"url\s*\+=\s*['\"]([^'\"]*)['\"]", html)
+                real = ''.join(parts)
+                if 'mp.weixin.qq.com' in real:
+                    return real
+                m = re.search(r"https?://mp\.weixin\.qq\.com/[^\s'\"<>]+", html)
+                if m:
+                    return m.group(0)
+        except Exception as e:
+            self.log(f"  [微信] fetch 方案失败，回退开页面：{type(e).__name__}: {e}")
+
+        # ---------- 方案 B：开新页面 ----------
         page = None
         try:
+            context = search_page.context
             page = context.new_page()
             page.goto(link_url, referer='https://weixin.sogou.com/',
                       wait_until='domcontentloaded', timeout=20000)
+
+            # ★ 检测搜狗验证码页：URL 含 antispider / 页面含 VerifyCode / 验证码
+            cur = (page.url or '').lower()
+            try:
+                body = (page.content() or '').lower()
+            except Exception:
+                body = ''
+            hit_captcha = (
+                'antispider' in cur
+                or 'verify' in cur
+                or 'captcha' in cur
+                or 'verifycode' in body
+                or '请输入验证码' in body
+                or '人机验证' in body
+            )
+            if hit_captcha:
+                # 保留页面，等用户处理
+                self.pause_for_user('搜狗微信跳转壳要求验证码，请在打开的页面完成验证')
+                return ''
+
             try:
                 page.wait_for_url(
                     lambda u: 'mp.weixin.qq.com' in (u or ''), timeout=6000)
@@ -62,7 +109,7 @@ class SogouWeixinEngine(BaseEngine):
             biz = self._js_var(html, 'biz')
             mid = self._js_var(html, 'mid')
             idx = self._js_var(html, 'idx')
-            sn = self._js_var(html, 'sn')
+            sn  = self._js_var(html, 'sn')
             if biz and mid:
                 url = f"https://mp.weixin.qq.com/s?__biz={biz}&mid={mid}&idx={idx or '1'}"
                 if sn:
@@ -70,11 +117,12 @@ class SogouWeixinEngine(BaseEngine):
                 return url
             return ''
         except Exception as e:
-            self.log(f"  [微信文章地址解析失败] {type(e).__name__}: {e}")
+            self.log(f"  [微信跳转壳解析失败] {type(e).__name__}: {e}")
             return ''
         finally:
             try:
-                if page:
+                # ★ 撞验证码时保留页面给用户处理
+                if page and not getattr(self.app, 'keep_page', False):
                     page.close()
             except Exception:
                 pass
@@ -176,7 +224,11 @@ class SogouWeixinEngine(BaseEngine):
             for it in todo:
                 link_url = self._normalize_weixin_link(it.get('url', ''))
                 if 'weixin.sogou.com/link' in link_url.lower():
-                    final_url = self._resolve_weixin_article(context, link_url) or link_url
+                    # ★ 传当前搜索页 page（不是 context），用它的 evaluate 发 fetch
+                    final_url = self._resolve_weixin_article(page, link_url)
+                    if not final_url:
+                        self.log(f"  [微信] 解析真链失败，跳过：{link_url[:80]}")
+                        continue
                 else:
                     final_url = link_url or it.get('url', '')
 
