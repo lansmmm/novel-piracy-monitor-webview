@@ -1,9 +1,6 @@
 """
 打盗全家捅 —— pywebview 版
 
-批 1-2-B：真接 Playwright + 百度引擎（点「搜索」→ 真开 Edge → 真抓百度 → 结果逐行推表格）
-（已含第 3 步验证过的 Python→JS 推送链路 + 模拟心跳）
-
 运行：
     python main.py
 调试（开 DevTools，Ctrl+Shift+I / F12）：
@@ -76,7 +73,7 @@ WINDOW_HEIGHT = 800
 STATS_FILE = os.path.join(BASE_DIR, "搜索统计.json")
 STATS_TXT_FILE = os.path.join(BASE_DIR, "搜索统计.txt")
 
-# 历史记录（批 5-D）：只存 URL 数组，不区分来源；不在集合里 = 新链接
+# 历史记录（批 5-D）：seen_urls.json 是 {"url": {"book": 书名, "source": 来源}}
 SEEN_URLS_FILE = os.path.join(BASE_DIR, "seen_urls.json")
 
 BROWSER_UA = (
@@ -110,9 +107,7 @@ _seen_urls_lock = threading.Lock()
 def _load_seen_urls():
     """从 seen_urls.json 读回历史记录（只读一次）
 
-    兼容两种格式：
-      - 老格式：["url1", "url2"]  → 自动迁移成对象格式并立刻落盘
-      - 新格式：{"url": {"book": …, "source": …}}
+    格式：{"url": {"book": …, "source": …}}
     """
     global _seen_urls, _seen_urls_loaded
     if _seen_urls_loaded:
@@ -123,33 +118,24 @@ def _load_seen_urls():
     except Exception:                                             # noqa: BLE001
         data = {}
 
-    # 老格式：list of str → 迁移成 dict
-    if isinstance(data, list):
-        migrated = {}
-        for u in data:
-            if u:
-                migrated[str(u)] = {"book": "", "source": ""}
-        _seen_urls = migrated
+    # 类型守卫：只接受 dict 格式，其他一律当空
+    if not isinstance(data, dict):
+        _seen_urls = {}
         _seen_urls_loaded = True
-        _save_seen_urls()        # 立刻落盘新格式
         return
 
-    if isinstance(data, dict):
-        # 清洗：确保 value 是 dict 且有 book / source
-        cleaned = {}
-        for k, v in data.items():
-            if not k:
-                continue
-            if isinstance(v, dict):
-                cleaned[str(k)] = {
-                    "book": str(v.get("book", "")),
-                    "source": str(v.get("source", "")),
-                }
-            else:
-                cleaned[str(k)] = {"book": "", "source": ""}
-        _seen_urls = cleaned
-    else:
-        _seen_urls = {}
+    cleaned = {}
+    for k, v in data.items():
+        if not k:
+            continue
+        if isinstance(v, dict):
+            cleaned[str(k)] = {
+                "book": str(v.get("book", "")),
+                "source": str(v.get("source", "")),
+            }
+        else:
+            cleaned[str(k)] = {"book": "", "source": ""}
+    _seen_urls = cleaned
     _seen_urls_loaded = True
 
 
@@ -336,7 +322,10 @@ _bm_lock = threading.Lock()
 
 
 def _load_bookmarks():
-    """懒加载 bookmarks.json，兼容旧格式（字符串数组）"""
+    """懒加载 bookmarks.json
+
+    格式：[{id, name, suffixes: [{text, enabled}]}]
+    """
     global _bookmarks, _bm_loaded
     if _bm_loaded:
         return
@@ -345,28 +334,11 @@ def _load_bookmarks():
             data = json.load(f)
     except Exception:                                             # noqa: BLE001
         data = []
+
+    # 类型守卫：只接受 list，且元素必须是 dict，其他一律丢弃
     if not isinstance(data, list):
         data = []
-
-    migrated = []
-    for item in data:
-        if isinstance(item, str):
-            migrated.append({
-                "id": uuid.uuid4().hex[:8],
-                "name": item,
-                "suffixes": [dict(s) for s in DEFAULT_SUFFIXES],
-            })
-        elif isinstance(item, dict):
-            if not item.get("id"):
-                item["id"] = uuid.uuid4().hex[:8]
-            if "suffixes" not in item or not isinstance(item["suffixes"], list):
-                item["suffixes"] = [dict(s) for s in DEFAULT_SUFFIXES]
-            else:
-                for s in item["suffixes"]:                        # 补 enabled 默认值
-                    s.setdefault("enabled", True)
-            migrated.append(item)
-
-    _bookmarks = migrated
+    _bookmarks = [item for item in data if isinstance(item, dict)]
     _bm_loaded = True
 
 

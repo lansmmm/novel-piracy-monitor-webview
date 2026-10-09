@@ -938,10 +938,21 @@
       window.showRowMenu(e.clientX, e.clientY);
     });
 
+    // ★ 智能滚动：在 append 之前先判断"用户是否接近底部"
+    //   （append 之后 scrollHeight 会变大，判断会失真）
+    var NEAR_BOTTOM_PX = 40;   // 离底部 40px 内算"接近底部"
+    var wasAtBottom = true;
+    if (tableScroll) {
+      var distToBottom = tableScroll.scrollHeight - tableScroll.scrollTop - tableScroll.clientHeight;
+      wasAtBottom = distToBottom <= NEAR_BOTTOM_PX;
+    }
+
     tableBody.appendChild(row);
 
-    // 自动滚到底部（滚动条在外层 .table-scroll 上）
-    if (tableScroll) { tableScroll.scrollTop = tableScroll.scrollHeight; }
+    // 只有用户本来就接近底部，才跟随滚动
+    if (tableScroll && wasAtBottom) {
+      tableScroll.scrollTop = tableScroll.scrollHeight;
+    }
 
     // 白名单行沉底
     window.reorderRows();
