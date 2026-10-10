@@ -74,7 +74,7 @@
     gap: 8px;
   }
 
-  .row.tight { gap: 6px; }
+  .row.tight { gap: 18px; }
 
   .spacer { flex: 1 1 auto; }
 
@@ -611,25 +611,32 @@
 
   <div class="hdiv"></div>
 
-  <!-- 【2】搜索来源 -->
+  <!-- 【2】搜索来源：第 1 行（PC 版 + 前台开关） -->
   <div class="row tight">
     <button id="btnToggleSources" class="btn-text">全选 / 取消</button>
-    <label class="check"><input type="checkbox" name="source" value="quark">夸克</label>
+    <label class="check"><input type="checkbox" name="source" value="quark_cn">夸克</label>
     <label class="check"><input type="checkbox" name="source" value="baidu">百度</label>
     <label class="check"><input type="checkbox" name="source" value="zhidao">知道</label>
     <label class="check"><input type="checkbox" name="source" value="tieba">贴吧</label>
     <label class="check"><input type="checkbox" name="source" value="bing">必应</label>
-    <label class="check"><input type="checkbox" name="source" value="toutiao">头条</label>
-    <label class="check"><input type="checkbox" name="source" value="sogou">搜狗</label>
-    <label class="check"><input type="checkbox" name="source" value="so360">360</label>
+    <label class="check"><input type="checkbox" name="source" value="toutiao_pc">头条</label>
+    <label class="check"><input type="checkbox" name="source" value="sogou_pc">搜狗</label>
+    <label class="check"><input type="checkbox" name="source" value="so360_pc">360</label>
     <label class="check"><input type="checkbox" name="source" value="sogou_weixin">微信</label>
-    <label class="check"><input type="checkbox" name="source" value="weibo">微博</label>
+    <label class="check"><input type="checkbox" name="source" value="weibo_mobile">微博</label>
     <span class="spacer"></span>
     <span class="label-main">前台模式</span>
     <label class="switch"><input id="switchFrontend" type="checkbox"><span class="track"></span></label>
-    <span style="width:12px"></span>
-    <span class="label-main">深度模式</span>
-    <label class="switch"><input id="switchDeep" type="checkbox"><span class="track"></span></label>
+  </div>
+
+  <!-- 来源：第 2 行（移动版） -->
+  <div class="row tight" style="margin-top: 8px;">
+    <button class="btn-text" style="visibility:hidden; pointer-events:none; user-select:none;">全选 / 取消</button>
+    <label class="check"><input type="checkbox" name="source" value="baidu_mobile">百度移动版</label>
+    <label class="check"><input type="checkbox" name="source" value="zhidao_mobile">知道移动版</label>
+    <label class="check"><input type="checkbox" name="source" value="toutiao_mobile">头条移动版</label>
+    <label class="check"><input type="checkbox" name="source" value="sogou_mobile">搜狗移动版</label>
+    <label class="check"><input type="checkbox" name="source" value="so360_mobile">360移动版</label>
   </div>
 
   <div class="hdiv"></div>
@@ -1358,11 +1365,21 @@
      - textOK：搜索框为空，或 标题/摘要/url 任一包含关键词
      - 两个都满足才显示；最后 reorderRows 保证白名单行始终沉底
      ====================================================================== */
+  /* 页签分组：点一个页签 = 匹配多个来源（PC + 移动版归到一组） */
+  var TAB_GROUPS = {
+    '百度':   ['百度', '百度移动版'],
+    '知道':   ['知道', '知道移动版'],
+    '头条':   ['头条', '头条移动版'],
+    '搜狗':   ['搜狗', '搜狗移动版'],
+    '360':    ['360', '360移动版'],
+  };
+
   window.applyFilters = function () {
     var allRows = getAllRows();
     allRows.forEach(function (r) {
       var src = r.dataset.source || '';
-      var tabOK = (_currentTabFilter === TAB_ALL) || (src === _currentTabFilter);
+      var allowedSrcs = TAB_GROUPS[_currentTabFilter] || [_currentTabFilter];
+      var tabOK = (_currentTabFilter === TAB_ALL) || (allowedSrcs.indexOf(src) >= 0);
 
       var textOK = true;
       if (_searchBoxFilter) {
@@ -1940,18 +1957,12 @@
   /* 顶栏那条「我已过验证，继续」= 弹窗里的继续按钮 */
   btnCaptchaContinueTop.addEventListener('click', onCaptchaContinue);
 
-  /* ==================== 前台 / 深度 两个开关 ==================== */
+  /* ==================== 前台开关 ==================== */
   var switchFrontend = document.getElementById('switchFrontend');
-  var switchDeep = document.getElementById('switchDeep');
 
   switchFrontend.addEventListener('change', function () {
     var on = !!switchFrontend.checked;
     if (apiReady()) { window.pywebview.api.set_frontend_mode(on); }
-  });
-
-  switchDeep.addEventListener('change', function () {
-    var on = !!switchDeep.checked;
-    if (apiReady()) { window.pywebview.api.set_deep_mode(on); }
   });
 
   /* ==================== 书签（批 3-A） ==================== */

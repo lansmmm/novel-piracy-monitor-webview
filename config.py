@@ -66,26 +66,33 @@ SRC_ORDER = WORKING_SRC_ORDER
 
 # 界面上的来源勾选框（顺序 = 勾选框顺序）：一个勾选框 = 一个来源组
 VISIBLE_SRC_ORDER = [
-    'quark',
-    'baidu', 'zhidao', 'tieba', 'bing',
-    'toutiao', 'sogou', 'so360', 'sogou_weixin',
-    'weibo',
+    'quark_cn',
+    'baidu', 'baidu_mobile',
+    'zhidao', 'zhidao_mobile',
+    'tieba', 'bing',
+    'toutiao_pc', 'toutiao_mobile',
+    'sogou_pc', 'sogou_mobile',
+    'so360_pc', 'so360_mobile',
+    'sogou_weixin', 'weibo_mobile',
 ]
 
-# 每个勾选框对应哪些引擎：
-#   第一个 = 常规模式搜的渠道（百度/头条/搜狗/360/知道 里挑抓得好的那个）
-#   其余 = 只在「深度模式」下才一起搜的另一个渠道（pc + 移动 双渠道）
+# 每个勾选框对应哪些引擎：现在一个勾选框 = 一个引擎（PC / 移动分开）
 SOURCE_GROUPS = {
-    'quark':        ['quark_cn'],
-    'baidu':        ['baidu', 'baidu_mobile'],
-    'zhidao':       ['zhidao', 'zhidao_mobile'],
-    'tieba':        ['tieba'],
-    'bing':         ['bing'],
-    'toutiao':      ['toutiao_pc', 'toutiao_mobile'],
-    'sogou':        ['sogou_pc', 'sogou_mobile'],
-    'so360':        ['so360_pc', 'so360_mobile'],
-    'sogou_weixin': ['sogou_weixin'],
-    'weibo':        ['weibo_mobile'],
+    'quark_cn':       ['quark_cn'],
+    'baidu':          ['baidu'],
+    'baidu_mobile':   ['baidu_mobile'],
+    'zhidao':         ['zhidao'],
+    'zhidao_mobile':  ['zhidao_mobile'],
+    'tieba':          ['tieba'],
+    'bing':           ['bing'],
+    'toutiao_pc':     ['toutiao_pc'],
+    'toutiao_mobile': ['toutiao_mobile'],
+    'sogou_pc':       ['sogou_pc'],
+    'sogou_mobile':   ['sogou_mobile'],
+    'so360_pc':       ['so360_pc'],
+    'so360_mobile':   ['so360_mobile'],
+    'sogou_weixin':   ['sogou_weixin'],
+    'weibo_mobile':   ['weibo_mobile'],
 }
 
 # 待测监控来源（测试专用程序只保留这些）
@@ -97,31 +104,21 @@ TEST_SRC_ORDER = [
     'sogou_mobile', 'toutiao_mobile', 'so360_mobile',
 ]
 SRC_LABEL = {
-    'zhidao': '知道',
-    'zhidao_mobile': '知道移动',
-    'tieba': '贴吧',
-    'baidu': '百度',
-    'baidu_mobile': '百度m',
-    'bing': '必应',
-    # 来源组名：界面勾选框 / 标签页只显示这三个
-    'sogou': '搜狗',
-    'toutiao': '头条',
-    'so360': '360',
-    # 具体来源（日志里用）
-    'sogou_mobile': '搜狗移动',
-    'sogou_pc': '搜狗PC',
-    'toutiao_mobile': '头条移动',
-    'toutiao_pc': '头条PC',
-    'so360_mobile': '360移动',
-    'so360_pc': '360PC',
-    'sogou_weixin': '微信',
-    # 主程序里的夸克标签页/行内名：界面只显示“夸克”，手动搜索里再带域名
-    'quark': '夸克',
-    'quark_m': '夸克',
-    'quark_so': '夸克',
-    'quark_cn': '夸克',
-    'weibo': '微博',
-    'weibo_mobile': '微博移动',
+    'quark_cn':       '夸克',
+    'baidu':          '百度',
+    'baidu_mobile':   '百度移动版',
+    'zhidao':         '知道',
+    'zhidao_mobile':  '知道移动版',
+    'tieba':          '贴吧',
+    'bing':           '必应',
+    'toutiao_pc':     '头条',
+    'toutiao_mobile': '头条移动版',
+    'sogou_pc':       '搜狗',
+    'sogou_mobile':   '搜狗移动版',
+    'so360_pc':       '360',
+    'so360_mobile':   '360移动版',
+    'sogou_weixin':   '微信',
+    'weibo_mobile':   '微博',
 }
 
 # 手动搜索：搜索引擎按几列摆放（2 列）

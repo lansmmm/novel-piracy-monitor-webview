@@ -84,11 +84,9 @@ BROWSER_UA = (
 # 停止标志：搜索线程在每个循环点检查它；「停止」按钮只 set，不强关浏览器
 _stop_event = threading.Event()
 
-# 前台 / 深度两个开关：前端 switch 调 set_frontend_mode / set_deep_mode 写这里
+# 前台开关：前端 switch 调 set_frontend_mode 写这里
 #   前台模式 True = 显示 Edge 窗口 + 撞验证码时弹窗等用户处理
-#   深度模式 True = 一个来源组里的 PC + 移动端引擎全都跑
 _frontend_mode = {"v": False}
-_deep_mode = {"v": False}
 
 # 当前这轮搜索的 adapter（captcha_continue / stop_search 靠它唤醒正卡在
 # pause_for_user 里等用户的搜索线程）
@@ -373,16 +371,21 @@ MAX_CAPTCHA_RETRY = 3
 
 # 来源勾选框的 value（引擎组 id）→ 中文名，日志里显示用
 SOURCE_LABELS = {
-    "quark": "夸克",
+    "quark_cn": "夸克",
     "baidu": "百度",
+    "baidu_mobile": "百度移动版",
     "zhidao": "知道",
+    "zhidao_mobile": "知道移动版",
     "tieba": "贴吧",
     "bing": "必应",
-    "toutiao": "头条",
-    "sogou": "搜狗",
-    "so360": "360",
+    "toutiao_pc": "头条",
+    "toutiao_mobile": "头条移动版",
+    "sogou_pc": "搜狗",
+    "sogou_mobile": "搜狗移动版",
+    "so360_pc": "360",
+    "so360_mobile": "360移动版",
     "sogou_weixin": "微信",
-    "weibo": "微博",
+    "weibo_mobile": "微博",
 }
 
 
@@ -772,7 +775,7 @@ class Api:
         print("[search] 收到「我已过验证，继续」")
         return "ok"
 
-    # ==================== 前台 / 深度 两个开关 ====================
+    # ==================== 前台开关 ====================
     def _set_mode(self, mode_dict, on, label, on_text, off_text):
         """两个开关的公共骨架：写标志 + 推一条日志"""
         mode_dict["v"] = bool(on)
@@ -785,12 +788,6 @@ class Api:
         return self._set_mode(_frontend_mode, on, "前台模式",
                               "开（显示浏览器 + 验证码弹窗）",
                               "关（后台无头，不弹窗）")
-
-    def set_deep_mode(self, on):
-        """深度模式：True = 一个来源组里的 PC + 移动端引擎全都跑"""
-        return self._set_mode(_deep_mode, on, "深度模式",
-                              "开（PC + 移动端一起搜）",
-                              "关（每个来源只搜主渠道）")
 
     # ==================== 导出结果（批 5-C） ====================
     def export_results(self, rows):
@@ -942,15 +939,11 @@ class Api:
         - ti: 该搜索词的序号（从 1 开始，用于日志"第 N/M 个搜索"）
         - is_first_of_task: 是否是同一搜索词下的第一个引擎
         """
-        # 展开来源 → 引擎列表（深度模式全展开，常规模式只取第一个）
+        # 展开来源 → 引擎列表（每个来源对应一个引擎）
         engine_tasks = []
         for src_id in sources:
             versions = SOURCE_GROUPS.get(src_id, [src_id])
-            if _deep_mode["v"]:
-                for v in versions:
-                    engine_tasks.append((v, src_id))
-            else:
-                engine_tasks.append((versions[0], src_id))
+            engine_tasks.append((versions[0], src_id))
 
         total_tasks = len(tasks)
         jobs = []
@@ -1116,9 +1109,8 @@ class Api:
     def _search_loop_real(self, tasks, sources, pages):
         """真抓取：开 Edge → 逐个来源跑引擎 → 每个引擎翻 N 页 → 日志 / 表格逐行推
 
-        前台/深度两个开关在这里生效：
+        前台模式在这里生效：
           - 前台模式 → 显示 Edge 窗口 + 撞验证码弹窗等用户点「我已过验证，继续」
-          - 深度模式 → 一个来源组里的 PC + 移动端引擎全都跑
         """
         self.set_searching(True)
         _displayed_urls.clear()          # 每次搜索清空会话内去重集合
@@ -1136,11 +1128,8 @@ class Api:
                     "（结果含旧帖）。如需【实时排序】，请在前台模式下打开微博页面手动登录一次。"
                 )
             self.push_log(
-                "模式：前台 %s ｜ 深度 %s"
-                % (
-                    "开" if _frontend_mode["v"] else "关",
-                    "开" if _deep_mode["v"] else "关",
-                )
+                "模式：前台 %s"
+                % ("开" if _frontend_mode["v"] else "关")
             )
             self.push_log("正在打开浏览器...")
 
