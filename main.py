@@ -390,7 +390,9 @@ SOURCE_LABELS = {
 
 
 def classify_source(label, r):
-    """按 URL 把结果归到更精确的来源（知道 / 贴吧 / 微信 / 文心），否则用原标签"""
+    """按 URL 把结果归到更精确的来源（知道 / 贴吧 / 微信 / 文心），否则用原标签。
+    最后一步：把「XX移动版」统一合并到「XX」（源列/页签都按 PC 版名显示）。
+    """
     url = (r.get("url") or "").lower()
     if "zhidao.baidu.com" in url:
         return "知道"
@@ -402,6 +404,9 @@ def classify_source(label, r):
         return "微博"
     if r.get("is_zhinengti"):
         return "文心"
+    # ★ 移动版合并到 PC 版：源列只显示「百度 / 知道 / 头条 / 搜狗 / 360」
+    if label.endswith("移动版"):
+        return label[:-3]
     return label
 
 
